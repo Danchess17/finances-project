@@ -18,22 +18,69 @@ class DataLoader:
         os.makedirs(os.path.join(data_dir, "portfolio"), exist_ok=True)
         os.makedirs(os.path.join(data_dir, "individual"), exist_ok=True)
     
-    def _generate_portfolio_filename(self, tickers, start_date, end_date):
-        """Генерация имени файла для портфеля"""
+    def _generate_filename(self, tickers, real_start_date, real_end_date):
+        """
+        Генерация имени файла на основе РЕАЛЬНЫХ дат из данных
+        
+        Parameters:
+        -----------
+        tickers : list
+            Список тикеров
+        real_start_date : datetime
+            Реальная начальная дата из данных
+        real_end_date : datetime
+            Реальная конечная дата из данных
+        """
         tickers_str = "_".join(tickers)
-        start_clean = start_date.replace("-", "")
-        end_clean = end_date.replace("-", "")
-        return f"portfolio/{tickers_str}_{start_clean}_{end_clean}_yf.csv"
+        start_clean = real_start_date.strftime("%Y%m%d")
+        end_clean = real_end_date.strftime("%Y%m%d")
+        return f"{tickers_str}_{start_clean}_{end_clean}_yf.csv"
     
-    def _generate_individual_filename(self, ticker, start_date, end_date):
-        """Генерация имени файла для отдельной акции"""
-        start_clean = start_date.replace("-", "")
-        end_clean = end_date.replace("-", "")
+    def _generate_individual_filename(self, ticker, real_start_date, real_end_date):
+        """Генерация имени файла для отдельной акции на основе реальных дат"""
+        start_clean = real_start_date.strftime("%Y%m%d")
+        end_clean = real_end_date.strftime("%Y%m%d")
         return f"individual/{ticker}_{start_clean}_{end_clean}_yf.csv"
     
-    def _save_portfolio_to_csv(self, portfolio_data, tickers, start_date, end_date):
-        """Сохранение портфельных данных в CSV"""
-        filename = self._generate_portfolio_filename(tickers, start_date, end_date)
+    def _get_real_dates(self, portfolio_data):
+        """Получить реальные даты начала и окончания из данных"""
+        if not portfolio_data:
+            return None, None
+        
+        real_start_dates = []
+        real_end_dates = []
+        
+        for ticker, data in portfolio_data.items():
+            if not data.empty:
+                real_start_dates.append(data.index.min())
+                real_end_dates.append(data.index.max())
+        
+        if not real_start_dates:
+            return None, None
+            
+        # Берем самую позднюю начальную дату и самую раннюю конечную
+        # чтобы получить общий период, где есть данные по всем акциям
+        common_start = max(real_start_dates)
+        common_end = min(real_end_dates)
+        
+        return common_start, common_end
+    
+    def _get_individual_dates(self, data):
+        """Получить реальные даты для отдельной акции"""
+        if data.empty:
+            return None, None
+        return data.index.min(), data.index.max()
+    
+    def _save_portfolio_to_csv(self, portfolio_data, tickers, requested_start_date, requested_end_date):
+        """Сохранение портфельных данных в CSV с правильными именами"""
+        # Получаем РЕАЛЬНЫЕ даты из данных
+        real_start_date, real_end_date = self._get_real_dates(portfolio_data)
+        
+        if not real_start_date or not real_end_date:
+            print("❌ Не удалось определить реальные даты для сохранения")
+            return None
+        
+        filename = self._generate_filename(tickers, real_start_date, real_end_date)
         filepath = os.path.join(self.data_dir, filename)
         
         try:
@@ -51,36 +98,72 @@ class DataLoader:
                         all_data[f"{ticker}_{column}"] = data[column]
             
             all_data.to_csv(filepath, encoding='utf-8')
+            
+            # Показываем разницу между запрошенными и реальными датами
+            requested_start = datetime.strptime(requested_start_date, '%Y-%m-%d')
+            requested_end = datetime.strptime(requested_end_date, '%Y-%m-%d')
+            
             print(f"✓ Портфельные данные сохранены в: {filepath}")
+            print(f"  📅 Запрошенный период: {requested_start_date} - {requested_end_date}")
+            print(f"  📊 Реальный период: {real_start_date.strftime('%Y-%m-%d')} - {real_end_date.strftime('%Y-%m-%d')}")
+            
+            # Предупреждение если периоды не совпадают
+            if real_start_date > requested_start or real_end_date < requested_end:
+                print(f"  ⚠️  ВНИМАНИЕ: Реальный период данных не совпадает с запрошенным!")
+                
             return filepath
             
         except Exception as e:
             print(f"✗ Ошибка сохранения портфеля в CSV: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
-    def _save_individual_to_csv(self, portfolio_data, start_date, end_date):
-        """Сохранение данных по каждой акции отдельно"""
+    def _save_individual_to_csv(self, portfolio_data, requested_start_date, requested_end_date):
+        """Сохранение данных по каждой акции отдельно с правильными именами"""
         saved_files = []
         
         for ticker, data in portfolio_data.items():
             try:
-                filename = self._generate_individual_filename(ticker, start_date, end_date)
+                # Получаем реальные даты для этой акции
+                real_start_date, real_end_date = self._get_individual_dates(data)
+                
+                if not real_start_date or not real_end_date:
+                    continue
+                
+                filename = self._generate_individual_filename(ticker, real_start_date, real_end_date)
                 filepath = os.path.join(self.data_dir, filename)
                 
                 # Сохраняем данные одной акции
                 data.to_csv(filepath, encoding='utf-8')
                 saved_files.append(filepath)
+                
+                # Показываем разницу между запрошенными и реальными датами
+                requested_start = datetime.strptime(requested_start_date, '%Y-%m-%d')
+                requested_end = datetime.strptime(requested_end_date, '%Y-%m-%d')
+                
                 print(f"✓ Данные {ticker} сохранены в: {filepath}")
+                print(f"  📅 Запрошенный период: {requested_start_date} - {requested_end_date}")
+                print(f"  📊 Реальный период: {real_start_date.strftime('%Y-%m-%d')} - {real_end_date.strftime('%Y-%m-%d')}")
+                
+                # Предупреждение если периоды не совпадают
+                if real_start_date > requested_start or real_end_date < requested_end:
+                    print(f"  ⚠️  ВНИМАНИЕ: Реальный период данных не совпадает с запрошенным!")
                 
             except Exception as e:
                 print(f"✗ Ошибка сохранения {ticker} в CSV: {e}")
         
         return saved_files
     
-    def _load_portfolio_from_csv(self, tickers, start_date, end_date):
-        """Загрузка портфельных данных из CSV"""
-        filename = self._generate_portfolio_filename(tickers, start_date, end_date)
-        filepath = os.path.join(self.data_dir, filename)
+    def _load_from_csv(self, tickers, start_date, end_date):
+        """Загрузка данных из CSV файла"""
+        # Для загрузки мы все еще используем запрошенные даты в имени файла
+        # но это нормально, так как при сохранении мы создаем файлы с реальными датами
+        tickers_str = "_".join(tickers)
+        start_clean = start_date.replace("-", "")
+        end_clean = end_date.replace("-", "")
+        filename = f"{tickers_str}_{start_clean}_{end_clean}_yf.csv"
+        filepath = os.path.join(self.data_dir, "portfolio", filename)
         
         if not os.path.exists(filepath):
             return None
@@ -103,6 +186,12 @@ class DataLoader:
                     portfolio_data[ticker] = ticker_df
             
             self.portfolio_data = portfolio_data
+            
+            # Показываем реальные даты из загруженного файла
+            real_start, real_end = self._get_real_dates(portfolio_data)
+            if real_start and real_end:
+                print(f"  📊 Реальный период в файле: {real_start.strftime('%Y-%m-%d')} - {real_end.strftime('%Y-%m-%d')}")
+            
             return portfolio_data
             
         except Exception as e:
@@ -115,7 +204,10 @@ class DataLoader:
         loaded_tickers = []
         
         for ticker in tickers:
-            filename = self._generate_individual_filename(ticker, start_date, end_date)
+            # Для загрузки используем запрошенные даты
+            start_clean = start_date.replace("-", "")
+            end_clean = end_date.replace("-", "")
+            filename = f"individual/{ticker}_{start_clean}_{end_clean}_yf.csv"
             filepath = os.path.join(self.data_dir, filename)
             
             if not os.path.exists(filepath):
@@ -126,6 +218,11 @@ class DataLoader:
                 individual_data = pd.read_csv(filepath, index_col=0, parse_dates=True)
                 portfolio_data[ticker] = individual_data
                 loaded_tickers.append(ticker)
+                
+                # Показываем реальные даты
+                real_start, real_end = self._get_individual_dates(individual_data)
+                if real_start and real_end:
+                    print(f"  📊 Реальный период: {real_start.strftime('%Y-%m-%d')} - {real_end.strftime('%Y-%m-%d')}")
                 
             except Exception as e:
                 print(f"✗ Ошибка загрузки {ticker} из CSV: {e}")
@@ -156,10 +253,9 @@ class DataLoader:
             Сохранять данные по каждой акции отдельно
         """
         
-        # Пытаемся загрузить из кэша (сначала портфель, потом индивидуальные)
+        # Пытаемся загрузить из кэша
         if use_cache:
-            # Сначала пробуем загрузить весь портфель
-            cached_data = self._load_portfolio_from_csv(tickers, start_date, end_date)
+            cached_data = self._load_from_csv(tickers, start_date, end_date)
             if cached_data is not None:
                 return cached_data
             
@@ -189,7 +285,7 @@ class DataLoader:
         if data:
             self.portfolio_data = data
             
-            # Сохраняем портфельные данные
+            # Сохраняем портфельные данные (с правильными именами!)
             self._save_portfolio_to_csv(data, successful_tickers, start_date, end_date)
             
             # Сохраняем индивидуальные данные (если включено)
@@ -202,13 +298,22 @@ class DataLoader:
         """
         Загрузка данных по одному тикеру
         """
-        filename = self._generate_individual_filename(ticker, start_date, end_date)
+        # Для загрузки используем запрошенные даты
+        start_clean = start_date.replace("-", "")
+        end_clean = end_date.replace("-", "")
+        filename = f"individual/{ticker}_{start_clean}_{end_clean}_yf.csv"
         filepath = os.path.join(self.data_dir, filename)
         
         if use_cache and os.path.exists(filepath):
             try:
                 print(f"Загрузка данных {ticker} из кэша: {filepath}")
                 data = pd.read_csv(filepath, index_col=0, parse_dates=True)
+                
+                # Показываем реальные даты
+                real_start, real_end = self._get_individual_dates(data)
+                if real_start and real_end:
+                    print(f"  📊 Реальный период: {real_start.strftime('%Y-%m-%d')} - {real_end.strftime('%Y-%m-%d')}")
+                    
                 return data
             except Exception as e:
                 print(f"✗ Ошибка загрузки {ticker} из CSV: {e}")
@@ -220,12 +325,18 @@ class DataLoader:
             if not stock.empty:
                 data = stock[['High', 'Low', 'Close', 'Volume']]
                 
-                # Сохраняем в кэш
-                try:
-                    data.to_csv(filepath, encoding='utf-8')
-                    print(f"✓ Данные {ticker} сохранены в: {filepath}")
-                except Exception as e:
-                    print(f"✗ Ошибка сохранения {ticker} в CSV: {e}")
+                # Сохраняем в кэш с правильным именем
+                real_start, real_end = self._get_individual_dates(data)
+                if real_start and real_end:
+                    filename = self._generate_individual_filename(ticker, real_start, real_end)
+                    filepath = os.path.join(self.data_dir, filename)
+                    
+                    try:
+                        data.to_csv(filepath, encoding='utf-8')
+                        print(f"✓ Данные {ticker} сохранены в: {filepath}")
+                        print(f"  📊 Реальный период: {real_start.strftime('%Y-%m-%d')} - {real_end.strftime('%Y-%m-%d')}")
+                    except Exception as e:
+                        print(f"✗ Ошибка сохранения {ticker} в CSV: {e}")
                 
                 return data
             else:
@@ -305,17 +416,17 @@ if __name__ == "__main__":
     print("=== ЗАГРУЗКА ПОРТФЕЛЯ ===")
     portfolio_data = loader.fetch_data(
         tickers=['AAPL', 'MSFT', 'GOOGL'],
-        start_date='2023-01-01',
-        end_date='2024-01-01',
-        save_individual=True  # Сохранять индивидуальные файлы
+        start_date='2013-01-01',
+        end_date='2025-11-17',
+        save_individual=True
     )
     
-    # Загрузка отдельной акции
+    # Загрузка отдельной акции (российская - покажет реальные даты)
     print("\n=== ЗАГРУЗКА ОТДЕЛЬНОЙ АКЦИИ ===")
-    tsla_data = loader.load_individual_ticker(
-        ticker='TSLA',
-        start_date='2023-01-01',
-        end_date='2024-01-01'
+    sber_data = loader.load_individual_ticker(
+        ticker='SBER.ME',
+        start_date='2013-01-01',
+        end_date='2025-11-17'
     )
     
     # Показать сохраненные файлы
