@@ -18,7 +18,7 @@ class DataLoader:
         os.makedirs(os.path.join(data_dir, "portfolio"), exist_ok=True)
         os.makedirs(os.path.join(data_dir, "individual"), exist_ok=True)
     
-    def _generate_filename(self, tickers, real_start_date, real_end_date):
+    def _generate_filename(self, tickers, real_start_date, real_end_date, file_type="portfolio"):
         """
         Генерация имени файла на основе РЕАЛЬНЫХ дат из данных
         
@@ -30,11 +30,17 @@ class DataLoader:
             Реальная начальная дата из данных
         real_end_date : datetime
             Реальная конечная дата из данных
+        file_type : str
+            Тип файла ('portfolio' или 'individual')
         """
         tickers_str = "_".join(tickers)
         start_clean = real_start_date.strftime("%Y%m%d")
         end_clean = real_end_date.strftime("%Y%m%d")
-        return f"{tickers_str}_{start_clean}_{end_clean}_yf.csv"
+        
+        if file_type == "portfolio":
+            return f"portfolio/{tickers_str}_{start_clean}_{end_clean}_yf.csv"
+        else:
+            return f"individual/{tickers_str}_{start_clean}_{end_clean}_yf.csv"
     
     def _generate_individual_filename(self, ticker, real_start_date, real_end_date):
         """Генерация имени файла для отдельной акции на основе реальных дат"""
@@ -80,7 +86,7 @@ class DataLoader:
             print("❌ Не удалось определить реальные даты для сохранения")
             return None
         
-        filename = self._generate_filename(tickers, real_start_date, real_end_date)
+        filename = self._generate_filename(tickers, real_start_date, real_end_date, "portfolio")
         filepath = os.path.join(self.data_dir, filename)
         
         try:
@@ -157,15 +163,27 @@ class DataLoader:
     
     def _load_from_csv(self, tickers, start_date, end_date):
         """Загрузка данных из CSV файла"""
-        # Для загрузки мы все еще используем запрошенные даты в имени файла
-        # но это нормально, так как при сохранении мы создаем файлы с реальными датами
+        # Для загрузки используем реальные даты из имени файла
+        # Сначала попробуем найти файл с реальными датами
         tickers_str = "_".join(tickers)
         start_clean = start_date.replace("-", "")
         end_clean = end_date.replace("-", "")
-        filename = f"{tickers_str}_{start_clean}_{end_clean}_yf.csv"
-        filepath = os.path.join(self.data_dir, "portfolio", filename)
         
-        if not os.path.exists(filepath):
+        # Вариант 1: файл с запрошенными датами (старый формат)
+        filename_old = f"portfolio/{tickers_str}_{start_clean}_{end_clean}_yf.csv"
+        filepath_old = os.path.join(self.data_dir, filename_old)
+        
+        # Вариант 2: файл в корне (старое расположение)
+        filename_root = f"{tickers_str}_{start_clean}_{end_clean}_yf.csv"
+        filepath_root = os.path.join(self.data_dir, filename_root)
+        
+        filepath = None
+        if os.path.exists(filepath_old):
+            filepath = filepath_old
+        elif os.path.exists(filepath_root):
+            filepath = filepath_root
+        
+        if not filepath:
             return None
             
         try:
