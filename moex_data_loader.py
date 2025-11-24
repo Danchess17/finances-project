@@ -7,11 +7,17 @@ from moex_parser import MoexParser
 from data_manager import DataManager
 
 class MoexDataLoader:
-    def __init__(self, base_dir="data"):
-        self.parser = MoexParser()
+    def __init__(self, base_dir="data", debug=False):
+        self.debug = debug
+        self.parser = MoexParser(debug=debug)
         self.data_manager = DataManager(output_dir=base_dir)
         self.base_dir = base_dir
         self._create_directories()
+    
+    def _print(self, *args, **kwargs):
+        """Выводит сообщение только если включен debug режим"""
+        if self.debug:
+            print(*args, **kwargs)
     
     def _create_directories(self):
         """Создаем необходимые директории"""
@@ -25,7 +31,7 @@ class MoexDataLoader:
         for directory in directories:
             if not os.path.exists(directory):
                 os.makedirs(directory)
-                print(f"📁 Создана директория: {directory}")
+                self._print(f"📁 Создана директория: {directory}")
     
     def load_portfolio_data(self, symbols, start_date, end_date, portfolio_name=None):
         """
@@ -37,8 +43,8 @@ class MoexDataLoader:
             end_date (str): Дата окончания в формате 'YYYY-MM-DD'
             portfolio_name (str): Название портфеля (если None - генерируется автоматически)
         """
-        print("=== ЗАГРУЗКА РОССИЙСКОГО ПОРТФЕЛЯ ===")
-        print(f"Загрузка данных с MOEX...")
+        self._print("=== ЗАГРУЗКА РОССИЙСКОГО ПОРТФЕЛЯ ===")
+        self._print(f"Загрузка данных с MOEX...")
         
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
@@ -50,7 +56,7 @@ class MoexDataLoader:
         successful_symbols = []
         
         for symbol in symbols:
-            print(f"⏳ Загружаем {symbol}...", end=" ")
+            self._print(f"⏳ Загружаем {symbol}...", end=" ")
             
             df = self.parser.parse_stock_data(symbol, start_dt, end_dt)
             
@@ -62,15 +68,18 @@ class MoexDataLoader:
                 
                 all_data.append(df)
                 successful_symbols.append(symbol)
-                print(f"✓ {len(df)} дней данных")
+                self._print(f"✓ {len(df)} дней данных")
             else:
-                print(f"✗ не удалось загрузить")
+                self._print(f"✗ не удалось загрузить")
             
             time.sleep(1)  # Пауза между запросами
         
         if not all_data:
-            print("❌ Не удалось загрузить данные ни по одной акции")
-            return None
+            if not self.debug:
+                print("❌ Не удалось загрузить данные ни по одной акции")
+            else:
+                self._print("❌ Не удалось загрузить данные ни по одной акции")
+            return None, []
         
         # Объединяем все данные
         portfolio_df = pd.concat(all_data, ignore_index=True)
@@ -82,19 +91,19 @@ class MoexDataLoader:
         
         portfolio_df.to_csv(filepath, index=False)
         
-        print(f"✓ Портфельные данные сохранены в: {filepath}")
-        print(f"  📅 Запрошенный период: {start_date} - {end_date}")
+        self._print(f"✓ Портфельные данные сохранены в: {filepath}")
+        self._print(f"  📅 Запрошенный период: {start_date} - {end_date}")
         
         # Проверяем реальный период данных
         actual_start = portfolio_df['Date'].min()
         actual_end = portfolio_df['Date'].max()
-        print(f"  📊 Реальный период: {actual_start} - {actual_end}")
+        self._print(f"  📊 Реальный период: {actual_start} - {actual_end}")
         
         if actual_start != start_date or actual_end != end_date:
-            print(f"  ⚠️  ВНИМАНИЕ: Реальный период данных не совпадает с запрошенным!")
+            self._print(f"  ⚠️  ВНИМАНИЕ: Реальный период данных не совпадает с запрошенным!")
         
         # Сохраняем индивидуальные акции
-        print("\n💾 Сохранение индивидуальных файлов:")
+        self._print("\n💾 Сохранение индивидуальных файлов:")
         for i, df in enumerate(all_data):
             symbol = successful_symbols[i]
             self._save_individual_stock(df, symbol, start_date, end_date)
@@ -111,17 +120,17 @@ class MoexDataLoader:
         actual_start = df['Date'].min()
         actual_end = df['Date'].max()
         
-        print(f"✓ Данные {symbol} сохранены в: {filepath}")
-        print(f"  📅 Запрошенный период: {start_date} - {end_date}")
-        print(f"  📊 Реальный период: {actual_start} - {actual_end}")
+        self._print(f"✓ Данные {symbol} сохранены в: {filepath}")
+        self._print(f"  📅 Запрошенный период: {start_date} - {end_date}")
+        self._print(f"  📊 Реальный период: {actual_start} - {actual_end}")
         
         if actual_start != start_date or actual_end != end_date:
-            print(f"  ⚠️  ВНИМАНИЕ: Реальный период данных не совпадает с запрошенным!")
+            self._print(f"  ⚠️  ВНИМАНИЕ: Реальный период данных не совпадает с запрошенным!")
     
     def load_single_stock(self, symbol, start_date, end_date):
         """Загружает данные по одной российской акции"""
-        print("\n=== ЗАГРУЗКА ОТДЕЛЬНОЙ АКЦИИ ===")
-        print(f"Загрузка данных {symbol} с MOEX...")
+        self._print("\n=== ЗАГРУЗКА ОТДЕЛЬНОЙ АКЦИИ ===")
+        self._print(f"Загрузка данных {symbol} с MOEX...")
         
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
@@ -137,7 +146,10 @@ class MoexDataLoader:
             self._save_individual_stock(df, symbol, start_date, end_date)
             return df
         else:
-            print(f"❌ Не удалось загрузить данные для {symbol}")
+            if not self.debug:
+                print(f"❌ Не удалось загрузить данные для {symbol}")
+            else:
+                self._print(f"❌ Не удалось загрузить данные для {symbol}")
             return None
     
     def list_saved_data(self):

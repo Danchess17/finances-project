@@ -435,7 +435,7 @@ if __name__ == "__main__":
     portfolio_data = loader.fetch_data(
         tickers=['AAPL', 'MSFT', 'GOOGL'],
         start_date='2013-01-01',
-        end_date='2025-11-17',
+        end_date='2025-11-15',
         save_individual=True
     )
     
@@ -444,7 +444,7 @@ if __name__ == "__main__":
     sber_data = loader.load_individual_ticker(
         ticker='SBER.ME',
         start_date='2013-01-01',
-        end_date='2025-11-17'
+        end_date='2023-11-17'
     )
     
     # Показать сохраненные файлы

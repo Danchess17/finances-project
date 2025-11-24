@@ -1,12 +1,19 @@
 # moex_parser.py
 import requests
 import pandas as pd
+import time
 from config import REQUEST_HEADERS, MOEX_BASE_URL, REQUEST_TIMEOUT
 
 class MoexParser:
-    def __init__(self):
+    def __init__(self, debug=False):
+        self.debug = debug
         self.session = requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
+    
+    def _print(self, *args, **kwargs):
+        """Выводит сообщение только если включен debug режим"""
+        if self.debug:
+            print(*args, **kwargs)
     
     def check_security_exists(self, symbol):
         """Проверяем существует ли ценная бумага"""
@@ -23,7 +30,7 @@ class MoexParser:
             return has_description or has_boards
             
         except Exception as e:
-            print(f"Ошибка при проверке {symbol}: {e}")
+            self._print(f"Ошибка при проверке {symbol}: {e}")
             return False
     
     def get_security_boards(self, symbol):
@@ -51,58 +58,104 @@ class MoexParser:
             return boards
             
         except Exception as e:
-            print(f"Ошибка при получении площадок для {symbol}: {e}")
+            self._print(f"Ошибка при получении площадок для {symbol}: {e}")
             return []
     
     def parse_stock_data(self, symbol, start_date, end_date):
         """Парсим исторические данные с MOEX"""
-        print(f"\n🔍 Поиск данных для {symbol}...")
+        self._print(f"\n🔍 Поиск данных для {symbol}...")
         
         # Проверяем существует ли бумага
         if not self.check_security_exists(symbol):
-            print(f"❌ Ценная бумага {symbol} не найдена на MOEX")
+            self._print(f"❌ Ценная бумага {symbol} не найдена на MOEX")
             return None
         
-        print(f"✅ Бумага {symbol} найдена на MOEX")
+        self._print(f"✅ Бумага {symbol} найдена на MOEX")
         
         # Получаем информацию о площадках
         boards = self.get_security_boards(symbol)
         if boards:
-            print(f"📊 Найдено торговых площадок: {len(boards)}")
+            self._print(f"📊 Найдено торговых площадок: {len(boards)}")
             for board in boards[:3]:  # Показываем первые 3
-                print(f"   - {board['id']} ({board['group']}): {board['name']}")
+                self._print(f"   - {board['id']} ({board['group']}): {board['name']}")
         
         # Форматируем даты
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
-        print(f"📅 Период: {start_str} - {end_str}")
+        self._print(f"📅 Период: {start_str} - {end_str}")
         
-        # Получаем исторические данные
+        # Получаем исторические данные с пагинацией
+        # MOEX API возвращает максимум 100 записей за запрос, нужна пагинация
         url = f"{MOEX_BASE_URL}/history/engines/stock/markets/shares/securities/{symbol}.json"
-        params = {
-            'from': start_str,
-            'till': end_str,
-            'iss.meta': 'off',
-            'limit': 1000
-        }
+        
+        all_rows = []
+        columns = None
+        start_index = 0
+        page_size = 100  # MOEX возвращает максимум 100 записей за раз
         
         try:
-            print(f"🌐 Запрос к MOEX API...")
-            response = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            data = response.json()
+            self._print(f"🌐 Запрос к MOEX API (с пагинацией)...")
             
-            if 'history' not in data:
-                print("❌ В ответе нет исторических данных")
-                return None
+            while True:
+                params = {
+                    'from': start_str,
+                    'till': end_str,
+                    'iss.meta': 'on',  # Включаем метаданные для получения информации о пагинации
+                    'limit': page_size,
+                    'start': start_index
+                }
+                
+                response = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                data = response.json()
+                
+                if 'history' not in data:
+                    if start_index == 0:
+                        self._print("❌ В ответе нет исторических данных")
+                        return None
+                    break  # Если на первой странице нет данных - ошибка, иначе закончили пагинацию
+                
+                # Получаем колонки (они одинаковые для всех страниц)
+                if columns is None:
+                    columns = data['history']['columns']
+                
+                page_rows = data['history']['data']
+                
+                if not page_rows:
+                    break  # Больше нет данных
+                
+                all_rows.extend(page_rows)
+                
+                # Проверяем, есть ли еще данные
+                total_records = None
+                if 'history.cursor' in data and 'data' in data['history.cursor']:
+                    cursor_data = data['history.cursor']['data']
+                    if cursor_data and len(cursor_data) > 0:
+                        # Формат: [INDEX, TOTAL, PAGESIZE]
+                        total_records = cursor_data[0][1] if len(cursor_data[0]) > 1 else None
+                        self._print(f"📈 Загружено {len(all_rows)} из {total_records or '?'} записей...")
+                
+                # Если получили меньше записей, чем запросили - это последняя страница
+                if len(page_rows) < page_size:
+                    break
+                
+                start_index += page_size
+                
+                # Небольшая задержка между запросами страниц (чтобы не перегружать API)
+                if len(page_rows) >= page_size:
+                    time.sleep(0.5)
+                
+                # Защита от бесконечного цикла
+                if len(all_rows) >= 10000:  # Максимум 10000 записей
+                    self._print("⚠️ Достигнут максимум 10000 записей, прекращаем загрузку")
+                    break
             
-            rows = data['history']['data']
-            columns = data['history']['columns']
+            rows = all_rows
             
-            print(f"📈 Получено {len(rows)} записей")
+            self._print(f"📈 Всего получено {len(rows)} записей")
             
             if not rows:
-                print("⚠️ Нет данных за указанный период")
+                self._print("⚠️ Нет данных за указанный период")
                 return None
             
             # Парсим данные
@@ -137,7 +190,7 @@ class MoexParser:
                     continue  # Пропускаем проблемные записи
             
             if not df_data:
-                print("❌ Не удалось извлечь корректные данные")
+                self._print("❌ Не удалось извлечь корректные данные")
                 return None
             
             df = pd.DataFrame(df_data)
@@ -147,13 +200,13 @@ class MoexParser:
             # Сортируем по дате
             df = df.sort_values('Date')
             
-            print(f"✅ Успешно обработано {len(df)} записей")
-            print(f"📊 Диапазон дат: {df['Date'].min()} - {df['Date'].max()}")
+            self._print(f"✅ Успешно обработано {len(df)} записей")
+            self._print(f"📊 Диапазон дат: {df['Date'].min()} - {df['Date'].max()}")
             
             return df
             
         except Exception as e:
-            print(f"❌ Ошибка при получении данных: {e}")
+            self._print(f"❌ Ошибка при получении данных: {e}")
             return None
     
     def test_popular_tickers(self):
