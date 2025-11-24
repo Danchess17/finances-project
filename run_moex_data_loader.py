@@ -5,7 +5,299 @@ import argparse
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
+import numpy as np
 import os
+from scipy.stats import norm
+from scipy.optimize import minimize
+
+
+def compute_spread(df):
+    """
+    Вычисляет спред как медиану (High - Low) / Close
+    
+    Parameters:
+        df (pd.DataFrame): DataFrame с колонками High, Low, Close
+        
+    Returns:
+        float: Медианный спред
+    """
+    spread = (df["High"] - df["Low"]) / df["Close"]
+    return spread.median()
+
+
+def calculate_optimal_weights(portfolio_df, symbols, debug=False):
+    """
+    Рассчитывает оптимальные веса для минимизации LVaR (Liquidity-adjusted VaR)
+    Использует методику из research.ipynb
+    
+    Parameters:
+        portfolio_df (pd.DataFrame): Данные портфеля с колонками Date, High, Low, Close, Symbol
+        symbols (list): Список символов
+        debug (bool): Режим отладки
+        
+    Returns:
+        dict: Словарь {symbol: weight}
+    """
+    if portfolio_df is None or portfolio_df.empty:
+        if debug:
+            print("❌ Нет данных для расчета весов")
+        return None
+    
+    if not symbols or len(symbols) == 0:
+        if debug:
+            print("❌ Нет символов для расчета весов")
+        return None
+    
+    # Убеждаемся, что Date в формате datetime
+    portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+    
+    # 1. Рассчитываем спреды для каждой акции
+    spreads = {}
+    prices_dict = {}
+    
+    for symbol in symbols:
+        stock_data = portfolio_df[portfolio_df['Symbol'] == symbol].copy()
+        stock_data = stock_data.sort_values('Date')
+        
+        if stock_data.empty:
+            if debug:
+                print(f"⚠️ Нет данных для {symbol}, пропускаем")
+            continue
+        
+        # Удаляем дубликаты дат (берем последнюю запись, как в ноутбуке)
+        stock_data = stock_data[~stock_data['Date'].duplicated(keep='last')]
+        
+        if stock_data.empty:
+            if debug:
+                print(f"⚠️ Нет данных для {symbol} после удаления дубликатов")
+            continue
+        
+        # Рассчитываем спред
+        spread = compute_spread(stock_data[['High', 'Low', 'Close']])
+        spreads[symbol] = spread
+        
+        # Сохраняем цены закрытия (устанавливаем Date как индекс для объединения)
+        stock_data_indexed = stock_data.set_index('Date')
+        prices_dict[symbol] = stock_data_indexed['Close']
+        
+        if debug:
+            print(f"  {symbol}: спред = {spread:.6f}")
+    
+    if not spreads:
+        if debug:
+            print("❌ Не удалось рассчитать спреды ни для одной акции")
+        return None
+    
+    # Обновляем список символов (только те, для которых есть данные)
+    valid_symbols = list(spreads.keys())
+    
+    if len(valid_symbols) < 2:
+        if debug:
+            print(f"⚠️ Нужно минимум 2 акции для расчета весов, найдено: {len(valid_symbols)}")
+        return None
+    
+    # 2. Создаем DataFrame с ценами закрытия
+    prices = pd.DataFrame(prices_dict).dropna()
+    
+    if prices.empty or len(prices) < 2:
+        if debug:
+            print("❌ Недостаточно данных о ценах для расчета")
+        return None
+    
+    # 3. Рассчитываем доходности
+    returns = prices.pct_change().dropna()
+    
+    if returns.empty or len(returns) < 2:
+        if debug:
+            print("❌ Недостаточно данных о доходностях")
+        return None
+    
+    # 4. Рассчитываем ковариационную матрицу
+    sigma = returns.cov().values
+    tickers = returns.columns.tolist()
+    n = len(tickers)
+    
+    # 5. Создаем массив спредов в том же порядке, что и tickers
+    spread_array = np.array([spreads[t] for t in tickers])
+    
+    if debug:
+        print(f"\n📊 Ковариационная матрица ({n}x{n}):")
+        print(sigma)
+        print(f"\n📊 Спреды:")
+        for t, s in zip(tickers, spread_array):
+            print(f"  {t}: {s:.6f}")
+    
+    # 6. Функция для минимизации LVaR
+    z = norm.ppf(0.95)  # 95% доверительный уровень
+    
+    def portfolio_lvar(w, sigma, spread_array, z):
+        """Функция для расчета LVaR портфеля"""
+        sigma_p = np.sqrt(w @ sigma @ w)
+        var = z * sigma_p
+        liquidity_cost = 0.5 * (w @ spread_array)
+        return var + liquidity_cost
+    
+    # 7. Оптимизация весов
+    w0 = np.ones(n) / n  # Начальные веса (равномерное распределение)
+    cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}  # Ограничение: сумма весов = 1
+    bounds = [(0, 1)] * n  # Ограничение: веса между 0 и 1
+    
+    try:
+        opt_lvar = minimize(
+            portfolio_lvar,
+            w0,
+            args=(sigma, spread_array, z),
+            method="SLSQP",
+            bounds=bounds,
+            constraints=[cons]
+        )
+        
+        if not opt_lvar.success:
+            if debug:
+                print(f"⚠️ Оптимизация не сошлась: {opt_lvar.message}")
+            return None
+        
+        w_lvar = opt_lvar.x
+        
+        # Создаем словарь весов
+        weights_dict = {ticker: weight for ticker, weight in zip(tickers, w_lvar)}
+        
+        if debug:
+            print(f"\n📊 Оптимальные веса (минимизация LVaR):")
+            for t, w in weights_dict.items():
+                print(f"  {t}: {w:.4f} ({w*100:.2f}%)")
+            
+            # Показываем итоговые метрики
+            final_w = np.array([w_lvar])
+            final_sigma_p = np.sqrt(final_w @ sigma @ final_w.T)[0, 0]
+            final_var = z * final_sigma_p
+            final_liq_cost = 0.5 * (final_w @ spread_array)[0]
+            final_lvar = final_var + final_liq_cost
+            
+            print(f"\n📊 Метрики портфеля:")
+            print(f"  Стандартное отклонение: {final_sigma_p:.6f}")
+            print(f"  VaR (95%): {final_var:.6f}")
+            print(f"  Стоимость ликвидности: {final_liq_cost:.6f}")
+            print(f"  LVaR: {final_lvar:.6f}")
+        
+        return weights_dict
+        
+    except Exception as e:
+        if debug:
+            print(f"❌ Ошибка при оптимизации весов: {e}")
+        return None
+
+
+def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date, end_date, 
+                                output_path=None, debug=False, show=False):
+    """
+    Рисует график с несколькими subplot'ами - по одному на каждую акцию
+    На каждом subplot: High и Low (разными цветами) с весом в легенде
+    
+    Parameters:
+        portfolio_df (pd.DataFrame): Данные портфеля
+        symbols (list): Список символов
+        weights_dict (dict): Словарь весов {symbol: weight}
+        start_date (str): Дата начала
+        end_date (str): Дата окончания
+        output_path (str): Путь для сохранения графика
+        debug (bool): Режим отладки
+        show (bool): Показать график
+    """
+    if portfolio_df is None or portfolio_df.empty:
+        if debug:
+            print("❌ Нет данных для построения графика")
+        return None
+    
+    if not symbols or len(symbols) == 0:
+        if debug:
+            print("❌ Нет символов для построения графика")
+        return None
+    
+    # Убеждаемся, что Date в формате datetime
+    portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+    
+    # Создаем subplot'ы - по одному на каждую акцию
+    n_symbols = len(symbols)
+    fig, axes = plt.subplots(n_symbols, 1, figsize=(16, 5 * n_symbols))
+    
+    if n_symbols == 1:
+        axes = [axes]
+    
+    # Цвета для High и Low (разные для наглядности)
+    high_color = 'green'
+    low_color = 'red'
+    
+    # Рисуем для каждой акции на отдельном subplot
+    for i, symbol in enumerate(symbols):
+        ax = axes[i]
+        
+        stock_data = portfolio_df[portfolio_df['Symbol'] == symbol].copy()
+        stock_data = stock_data.sort_values('Date')
+        
+        if stock_data.empty:
+            ax.text(0.5, 0.5, f'Нет данных для {symbol}', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(f'{symbol} - нет данных')
+            continue
+        
+        # Удаляем дубликаты дат (как в ноутбуке)
+        stock_data = stock_data[~stock_data['Date'].duplicated(keep='last')]
+        stock_data = stock_data.sort_values('Date')
+        
+        dates = stock_data['Date']
+        
+        # Получаем вес, если он есть
+        weight = weights_dict.get(symbol, None) if weights_dict else None
+        
+        # Формируем label с весом
+        if weight is not None:
+            label_high = f'High (вес: {weight:.2%})'
+            label_low = f'Low (вес: {weight:.2%})'
+        else:
+            label_high = 'High'
+            label_low = 'Low'
+        
+        # Рисуем High и Low разными цветами
+        ax.plot(dates, stock_data['High'], label=label_high, 
+               color=high_color, linewidth=1.5, alpha=0.8)
+        ax.plot(dates, stock_data['Low'], label=label_low, 
+               color=low_color, linewidth=1.5, alpha=0.8)
+        
+        # Заливаем область между High и Low для наглядности
+        ax.fill_between(dates, stock_data['Low'], stock_data['High'], 
+                       alpha=0.2, color='gray', label='Диапазон')
+        
+        ax.set_title(f'{symbol} - High и Low цены', fontweight='bold', fontsize=12)
+        ax.set_xlabel('Дата')
+        ax.set_ylabel('Цена (руб.)')
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.3)
+        
+        # Форматируем даты на оси X
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+    
+    plt.tight_layout()
+    
+    # Сохраняем график
+    if output_path is None:
+        output_path = f"portfolio_weights_{start_date}_to_{end_date}.png"
+    
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    if debug:
+        print(f"\n📊 График с весами сохранен в: {output_path}")
+    
+    # Показываем график, если запрошено
+    if show:
+        if debug:
+            print("👁️  Показываем график...")
+        plt.show()
+        plt.close()
+    else:
+        plt.close()
+    
+    return output_path
 
 
 def print_debug_dates(portfolio_df, symbols, start_date, end_date):
@@ -76,7 +368,7 @@ def print_debug_dates(portfolio_df, symbols, start_date, end_date):
     print("=" * 60)
 
 
-def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_path=None, debug=False):
+def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_path=None, debug=False, show=False):
     """
     Рисует график High и Low для каждой акции из портфеля с течением времени
     
@@ -86,6 +378,8 @@ def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_pat
         start_date (str): Дата начала
         end_date (str): Дата окончания
         output_path (str): Путь для сохранения графика
+        debug (bool): Режим отладки
+        show (bool): Показать график в окне (в дополнение к сохранению)
     """
     if portfolio_df is None or portfolio_df.empty:
         if debug:
@@ -150,9 +444,15 @@ def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_pat
     if debug:
         print(f"\n📊 График сохранен в: {output_path}")
     
-    # Показываем график (опционально, можно закомментировать для серверных запусков)
-    # plt.show()
-    plt.close()
+    # Показываем график, если запрошено
+    if show:
+        if debug:
+            print("👁️  Показываем график...")
+        plt.show()
+        # Закрываем фигуру после того, как пользователь закроет окно
+        plt.close()
+    else:
+        plt.close()
     
     return output_path
 
@@ -219,6 +519,15 @@ def main_cli():
   
   # Загрузка с указанием имени портфеля
   python run_moex_data_loader.py --portfolio SBER GAZP --portfolio-name MY_PORTFOLIO --plot
+  
+  # Загрузка с показом графика в окне
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --plot --show
+  
+  # Расчет оптимальных весов портфеля (минимизация LVaR)
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --weights
+  
+  # Расчет весов с показом графика
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --weights --show --debug
         """
     )
     
@@ -253,11 +562,21 @@ def main_cli():
                        action='store_true',
                        help='Создать график High/Low для каждой акции')
     
+    parser.add_argument('--weights',
+                       dest='weights',
+                       action='store_true',
+                       help='Рассчитать оптимальные веса портфеля (минимизация LVaR) и показать график с весами')
+    
     parser.add_argument('--plot-output',
                        dest='plot_output',
                        type=str,
                        default=None,
                        help='Путь для сохранения графика (по умолчанию: high_low_chart_START_to_END.png)')
+    
+    parser.add_argument('--show',
+                       dest='show',
+                       action='store_true',
+                       help='Показать график в окне (в дополнение к сохранению)')
     
     parser.add_argument('--csv-output',
                        dest='csv_output',
@@ -356,11 +675,51 @@ def main_cli():
             start_date=args.start_date,
             end_date=args.end_date,
             output_path=args.plot_output,
-            debug=args.debug
+            debug=args.debug,
+            show=args.show
         )
         
         if not args.debug and plot_output_path:
             print(plot_output_path)
+    
+    # Рассчитываем оптимальные веса, если запрошено
+    if args.weights:
+        if args.debug:
+            print("\n" + "=" * 60)
+            print("⚖️  РАСЧЕТ ОПТИМАЛЬНЫХ ВЕСОВ ПОРТФЕЛЯ")
+            print("=" * 60)
+        
+        weights_dict = calculate_optimal_weights(
+            portfolio_df=portfolio_df,
+            symbols=successful_symbols,
+            debug=args.debug
+        )
+        
+        if weights_dict:
+            # Строим график с весами
+            weights_output_path = plot_portfolio_with_weights(
+                portfolio_df=portfolio_df,
+                symbols=successful_symbols,
+                weights_dict=weights_dict,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                output_path=None if not args.plot_output else args.plot_output.replace('.png', '_weights.png'),
+                debug=args.debug,
+                show=args.show
+            )
+            
+            if not args.debug and weights_output_path:
+                print(weights_output_path)
+            
+            # В обычном режиме выводим веса
+            if not args.debug:
+                print("\nВеса портфеля:")
+                for symbol in successful_symbols:
+                    if symbol in weights_dict:
+                        print(f"  {symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
+        else:
+            if not args.debug:
+                print("❌ Не удалось рассчитать оптимальные веса")
     
     if args.debug:
         print("\n" + "=" * 60)
