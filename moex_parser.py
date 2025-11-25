@@ -63,27 +63,27 @@ class MoexParser:
     
     def parse_stock_data(self, symbol, start_date, end_date):
         """Парсим исторические данные с MOEX"""
-        self._print(f"\n🔍 Поиск данных для {symbol}...")
+        self._print(f"\nПоиск данных для {symbol}...")
         
         # Проверяем существует ли бумага
         if not self.check_security_exists(symbol):
-            self._print(f"❌ Ценная бумага {symbol} не найдена на MOEX")
+            self._print(f"Ценная бумага {symbol} не найдена на MOEX")
             return None
         
-        self._print(f"✅ Бумага {symbol} найдена на MOEX")
+        self._print(f"Бумага {symbol} найдена на MOEX")
         
         # Получаем информацию о площадках
         boards = self.get_security_boards(symbol)
         if boards:
-            self._print(f"📊 Найдено торговых площадок: {len(boards)}")
+            self._print(f"Найдено торговых площадок: {len(boards)}")
             for board in boards[:3]:  # Показываем первые 3
-                self._print(f"   - {board['id']} ({board['group']}): {board['name']}")
+                self._print(f"- {board['id']} ({board['group']}): {board['name']}")
         
         # Форматируем даты
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
-        self._print(f"📅 Период: {start_str} - {end_str}")
+        self._print(f"Период: {start_str} - {end_str}")
         
         # Получаем исторические данные с пагинацией
         # MOEX API возвращает максимум 100 записей за запрос, нужна пагинация
@@ -95,7 +95,7 @@ class MoexParser:
         page_size = 100  # MOEX возвращает максимум 100 записей за раз
         
         try:
-            self._print(f"🌐 Запрос к MOEX API (с пагинацией)...")
+            self._print(f"Запрос к MOEX API (с пагинацией)...")
             
             while True:
                 params = {
@@ -111,7 +111,7 @@ class MoexParser:
                 
                 if 'history' not in data:
                     if start_index == 0:
-                        self._print("❌ В ответе нет исторических данных")
+                        self._print("В ответе нет исторических данных")
                         return None
                     break  # Если на первой странице нет данных - ошибка, иначе закончили пагинацию
                 
@@ -133,7 +133,7 @@ class MoexParser:
                     if cursor_data and len(cursor_data) > 0:
                         # Формат: [INDEX, TOTAL, PAGESIZE]
                         total_records = cursor_data[0][1] if len(cursor_data[0]) > 1 else None
-                        self._print(f"📈 Загружено {len(all_rows)} из {total_records or '?'} записей...")
+                        self._print(f"Загружено {len(all_rows)} из {total_records or '?'} записей...")
                 
                 # Если получили меньше записей, чем запросили - это последняя страница
                 if len(page_rows) < page_size:
@@ -147,15 +147,15 @@ class MoexParser:
                 
                 # Защита от бесконечного цикла
                 if len(all_rows) >= 10000:  # Максимум 10000 записей
-                    self._print("⚠️ Достигнут максимум 10000 записей, прекращаем загрузку")
+                    self._print("Достигнут максимум 10000 записей, прекращаем загрузку")
                     break
             
             rows = all_rows
             
-            self._print(f"📈 Всего получено {len(rows)} записей")
+            self._print(f"Всего получено {len(rows)} записей")
             
             if not rows:
-                self._print("⚠️ Нет данных за указанный период")
+                self._print("Нет данных за указанный период")
                 return None
             
             # Парсим данные
@@ -190,7 +190,7 @@ class MoexParser:
                     continue  # Пропускаем проблемные записи
             
             if not df_data:
-                self._print("❌ Не удалось извлечь корректные данные")
+                self._print("Не удалось извлечь корректные данные")
                 return None
             
             df = pd.DataFrame(df_data)
@@ -200,13 +200,13 @@ class MoexParser:
             # Сортируем по дате
             df = df.sort_values('Date')
             
-            self._print(f"✅ Успешно обработано {len(df)} записей")
-            self._print(f"📊 Диапазон дат: {df['Date'].min()} - {df['Date'].max()}")
+            self._print(f"Успешно обработано {len(df)} записей")
+            self._print(f"Диапазон дат: {df['Date'].min()} - {df['Date'].max()}")
             
             return df
             
         except Exception as e:
-            self._print(f"❌ Ошибка при получении данных: {e}")
+            self._print(f"Ошибка при получении данных: {e}")
             return None
     
     def test_popular_tickers(self):
@@ -217,16 +217,16 @@ class MoexParser:
             'YNDX', 'TCSG', 'OZON', 'VTBR', 'ALRS', 'POLY'
         ]
         
-        print("🔍 Проверка популярных тикеров на MOEX:")
+        print("Проверка популярных тикеров на MOEX:")
         
         working_tickers = []
         for ticker in popular_tickers:
             exists = self.check_security_exists(ticker)
-            status = "✅" if exists else "❌"
-            print(f"  {status} {ticker}")
+            status = "" if exists else ""
+            print(f"{status} {ticker}")
             
             if exists:
                 working_tickers.append(ticker)
         
-        print(f"\n📊 Итого: {len(working_tickers)} из {len(popular_tickers)} тикеров работают")
+        print(f"\n Итого: {len(working_tickers)} из {len(popular_tickers)} тикеров работают")
         return working_tickers

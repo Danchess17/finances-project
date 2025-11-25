@@ -40,12 +40,12 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     """
     if portfolio_df is None or portfolio_df.empty:
         if debug:
-            print("❌ Нет данных для расчета весов")
+            print("Нет данных для расчета весов")
         return None, None, None, None
     
     if not symbols or len(symbols) == 0:
         if debug:
-            print("❌ Нет символов для расчета весов")
+            print("Нет символов для расчета весов")
         return None, None, None, None
     
     # Убеждаемся, что Date в формате datetime
@@ -61,7 +61,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         
         if stock_data.empty:
             if debug:
-                print(f"⚠️ Нет данных для {symbol}, пропускаем")
+                print(f"Нет данных для {symbol}, пропускаем")
             continue
         
         # Удаляем дубликаты дат (берем последнюю запись, как в ноутбуке)
@@ -69,7 +69,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         
         if stock_data.empty:
             if debug:
-                print(f"⚠️ Нет данных для {symbol} после удаления дубликатов")
+                print(f"Нет данных для {symbol} после удаления дубликатов")
             continue
         
         # Рассчитываем спред
@@ -81,11 +81,11 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         prices_dict[symbol] = stock_data_indexed['Close']
         
         if debug:
-            print(f"  {symbol}: спред = {spread:.6f}")
+            print(f"{symbol}: спред = {spread:.6f}")
     
     if not spreads:
         if debug:
-            print("❌ Не удалось рассчитать спреды ни для одной акции")
+            print("Не удалось рассчитать спреды ни для одной акции")
         return None, None, None, None
     
     # Обновляем список символов (только те, для которых есть данные)
@@ -93,7 +93,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     
     if len(valid_symbols) < 2:
         if debug:
-            print(f"⚠️ Нужно минимум 2 акции для расчета весов, найдено: {len(valid_symbols)}")
+            print(f"Нужно минимум 2 акции для расчета весов, найдено: {len(valid_symbols)}")
         return None, None, None, None
     
     # 2. Создаем DataFrame с ценами закрытия
@@ -101,7 +101,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     
     if prices.empty or len(prices) < 2:
         if debug:
-            print("❌ Недостаточно данных о ценах для расчета")
+            print("Недостаточно данных о ценах для расчета")
         return None, None, None, None
     
     # 3. Рассчитываем доходности
@@ -109,7 +109,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     
     if returns.empty or len(returns) < 2:
         if debug:
-            print("❌ Недостаточно данных о доходностях")
+            print("Недостаточно данных о доходностях")
         return None, None, None, None
     
     # 4. Рассчитываем ковариационную матрицу
@@ -121,30 +121,30 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     spread_array = np.array([spreads[t] for t in tickers])
     
     if debug:
-        print(f"\n📊 Ковариационная матрица ({n}x{n}):")
+        print(f"\nКовариационная матрица ({n}x{n}):")
         print(sigma)
-        print(f"\n📊 Спреды:")
+        print(f"\nСпреды:")
         for t, s in zip(tickers, spread_array):
-            print(f"  {t}: {s:.6f}")
+            print(f"{t}: {s:.6f}")
         
         # Выводим формулу оптимизации
         print("\n" + "=" * 70)
-        print("📐 ФОРМУЛА ОПТИМИЗАЦИИ LVaR")
+        print("ФОРМУЛА ОПТИМИЗАЦИИ LVaR")
         print("=" * 70)
         print("\nМы минимизируем LVaR (Liquidity-adjusted Value at Risk):")
-        print("\n  LVaR = VaR + Стоимость_ликвидности")
+        print("\nLVaR = VaR + Стоимость_ликвидности")
         print("\nгде:")
-        print("  VaR = z × σ_p")
-        print("    z = квантиль нормального распределения (95% → z ≈ 1.645)")
-        print("    σ_p = √(w^T × Σ × w)  - стандартное отклонение портфеля")
-        print("      w = вектор весов [w₁, w₂, ..., wₙ]")
-        print("      Σ = ковариационная матрица доходностей")
-        print("\n  Стоимость_ликвидности = 0.5 × (w^T × s)")
-        print("    s = вектор спредов [s₁, s₂, ..., sₙ]")
-        print("\n  Итого: LVaR = z × √(w^T × Σ × w) + 0.5 × (w^T × s)")
+        print("VaR = z × σ_p")
+        print("z = квантиль нормального распределения (95% → z ≈ 1.645)")
+        print("σ_p = √(w^T × Σ × w)  - стандартное отклонение портфеля")
+        print("w = вектор весов [w₁, w₂, ..., wₙ]")
+        print("Σ = ковариационная матрица доходностей")
+        print("\nСтоимость_ликвидности = 0.5 × (w^T × s)")
+        print("s = вектор спредов [s₁, s₂, ..., sₙ]")
+        print("\nИтого: LVaR = z × √(w^T × Σ × w) + 0.5 × (w^T × s)")
         print("\nОграничения:")
-        print("  • Сумма весов = 1 (Σwᵢ = 1)")
-        print("  • Все веса ≥ 0 (wᵢ ≥ 0)")
+        print("• Сумма весов = 1 (Σwᵢ = 1)")
+        print("• Все веса ≥ 0 (wᵢ ≥ 0)")
         print("=" * 70)
     
     # 6. Функция для минимизации LVaR
@@ -174,7 +174,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         
         if not opt_lvar.success:
             if debug:
-                print(f"⚠️ Оптимизация не сошлась: {opt_lvar.message}")
+                print(f"Оптимизация не сошлась: {opt_lvar.message}")
             return None, None, None, None
         
         w_lvar = opt_lvar.x
@@ -190,21 +190,21 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
             final_liq_cost = 0.5 * (final_w @ spread_array)[0]
             final_lvar = final_var + final_liq_cost
             
-            print(f"\n📊 Оптимальные веса (минимизация LVaR):")
+            print(f"\n Оптимальные веса (минимизация LVaR):")
             for t, w in weights_dict.items():
-                print(f"  {t}: {w:.4f} ({w*100:.2f}%)")
+                print(f"{t}: {w:.4f} ({w*100:.2f}%)")
             
-            print(f"\n📊 Метрики портфеля:")
-            print(f"  Стандартное отклонение: {final_sigma_p:.6f}")
-            print(f"  VaR (95%): {final_var:.6f}")
-            print(f"  Стоимость ликвидности: {final_liq_cost:.6f}")
-            print(f"  LVaR: {final_lvar:.6f}")
+            print(f"\n Метрики портфеля:")
+            print(f"Стандартное отклонение: {final_sigma_p:.6f}")
+            print(f"VaR (95%): {final_var:.6f}")
+            print(f"Стоимость ликвидности: {final_liq_cost:.6f}")
+            print(f"LVaR: {final_lvar:.6f}")
         
         return weights_dict, sigma, spread_array, tickers
         
     except Exception as e:
         if debug:
-            print(f"❌ Ошибка при оптимизации весов: {e}")
+            print(f"Ошибка при оптимизации весов: {e}")
         return None, None, None, None
     
     # Если дошли сюда без возврата - возвращаем None
@@ -291,11 +291,11 @@ def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread
     
     if debug:
         print("\n" + "=" * 70)
-        print("✅ ПРОВЕРКА ОПТИМАЛЬНОСТИ ВЕСОВ")
+        print("ПРОВЕРКА ОПТИМАЛЬНОСТИ ВЕСОВ")
         print("=" * 70)
-        print(f"\n📊 Оптимальные веса дают LVaR = {optimal_lvar:.6f}")
-        print(f"   VaR = {optimal_metrics['var']:.6f}")
-        print(f"   Стоимость ликвидности = {optimal_metrics['liquidity_cost']:.6f}")
+        print(f"\n Оптимальные веса дают LVaR = {optimal_lvar:.6f}")
+        print(f"VaR = {optimal_metrics['var']:.6f}")
+        print(f"Стоимость ликвидности = {optimal_metrics['liquidity_cost']:.6f}")
     
     # 1. Проверяем равномерное распределение весов
     equal_w = np.ones(n) / n
@@ -307,15 +307,15 @@ def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread
     }
     
     if debug:
-        print(f"\n1️⃣  Равномерное распределение (1/{n} для каждой акции):")
+        print(f"\nРавномерное распределение (1/{n} для каждой акции):")
         for s, w in zip(symbols, equal_w):
-            print(f"   {s}: {w:.2%}")
-        print(f"   LVaR = {equal_metrics['lvar']:.6f} "
+            print(f"{s}: {w:.2%}")
+        print(f"LVaR = {equal_metrics['lvar']:.6f} "
               f"({((equal_metrics['lvar'] / optimal_lvar - 1) * 100):+.2f}% относительно оптимального)")
     
     # 2. Проверяем портфели из одной акции
     if debug:
-        print(f"\n2️⃣  Портфели из одной акции:")
+        print(f"\nПортфели из одной акции:")
     
     for i, symbol in enumerate(symbols):
         single_w = np.zeros(n)
@@ -330,8 +330,8 @@ def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread
         })
         
         if debug:
-            print(f"   100% {symbol}:")
-            print(f"      LVaR = {single_metrics['lvar']:.6f} "
+            print(f"100% {symbol}:")
+            print(f"LVaR = {single_metrics['lvar']:.6f} "
                   f"({((single_metrics['lvar'] / optimal_lvar - 1) * 100):+.2f}% относительно оптимального)")
     
     # 3. Генерируем случайные комбинации весов
@@ -359,19 +359,19 @@ def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread
     results['all_random_lvars'] = random_lvars  # Сохраняем все для графика
     
     if debug:
-        print(f"\n3️⃣  Случайные комбинации весов ({num_samples} образцов):")
-        print(f"   Минимальный LVaR: {random_lvars.min():.6f}")
-        print(f"   Максимальный LVaR: {random_lvars.max():.6f}")
-        print(f"   Средний LVaR: {random_lvars.mean():.6f}")
-        print(f"   Медианный LVaR: {np.median(random_lvars):.6f}")
-        print(f"   Оптимальный LVaR лучше, чем {((random_lvars > optimal_lvar).sum() / num_samples * 100):.1f}% случайных комбинаций")
+        print(f"\nСлучайные комбинации весов ({num_samples} образцов):")
+        print(f"Минимальный LVaR: {random_lvars.min():.6f}")
+        print(f"Максимальный LVaR: {random_lvars.max():.6f}")
+        print(f"Средний LVaR: {random_lvars.mean():.6f}")
+        print(f"Медианный LVaR: {np.median(random_lvars):.6f}")
+        print(f"Оптимальный LVaR лучше, чем {((random_lvars > optimal_lvar).sum() / num_samples * 100):.1f}% случайных комбинаций")
         
-        print(f"\n   Примеры случайных комбинаций:")
+        print(f"\n Примеры случайных комбинаций:")
         for i, sample in enumerate(results['random_samples'][:3], 1):
-            print(f"   Пример {i}:")
+            print(f"Пример {i}:")
             for s, w in sample['weights'].items():
-                print(f"      {s}: {w:.2%}")
-            print(f"      LVaR = {sample['lvar']:.6f} "
+                print(f"{s}: {w:.2%}")
+            print(f"LVaR = {sample['lvar']:.6f} "
                   f"({((sample['lvar'] / optimal_lvar - 1) * 100):+.2f}%)")
     
     # 4. Проверяем альтернативные стратегии (например, без GAZP)
@@ -395,17 +395,17 @@ def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread
             })
             
             if debug:
-                print(f"\n4️⃣  Альтернативная стратегия: равномерно между двумя лучшими по спреду:")
+                print(f"\nАльтернативная стратегия: равномерно между двумя лучшими по спреду:")
                 for s, w in zip(symbols, two_best_w):
                     if w > 0:
-                        print(f"   {s}: {w:.2%}")
-                print(f"   LVaR = {two_best_metrics['lvar']:.6f} "
+                        print(f"{s}: {w:.2%}")
+                print(f"LVaR = {two_best_metrics['lvar']:.6f} "
                       f"({((two_best_metrics['lvar'] / optimal_lvar - 1) * 100):+.2f}%)")
     
     # Итоговый вывод
     if debug:
         print("\n" + "=" * 70)
-        print("📊 ИТОГОВЫЕ ВЫВОДЫ")
+        print("ИТОГОВЫЕ ВЫВОДЫ")
         print("=" * 70)
         
         better_count = 0
@@ -424,12 +424,12 @@ def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread
             if alt['lvar'] > optimal_lvar:
                 better_count += 1
         
-        print(f"\n✅ Оптимальные веса лучше, чем:")
-        print(f"   - Равномерное распределение")
-        print(f"   - Все портфели из одной акции")
-        print(f"   - Альтернативные стратегии")
-        print(f"   - {((random_lvars > optimal_lvar).sum() / num_samples * 100):.1f}% случайных комбинаций")
-        print(f"\n💡 Вывод: Веса действительно оптимальны для минимизации LVaR!")
+        print(f"\n Оптимальные веса лучше, чем:")
+        print(f"- Равномерное распределение")
+        print(f"- Все портфели из одной акции")
+        print(f"- Альтернативные стратегии")
+        print(f"- {((random_lvars > optimal_lvar).sum() / num_samples * 100):.1f}% случайных комбинаций")
+        print(f"\n Вывод: Веса действительно оптимальны для минимизации LVaR!")
     
     return results
 
@@ -519,7 +519,7 @@ def plot_lvar_comparison(verification_results, symbols, output_path=None, debug=
     
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     if debug:
-        print(f"📊 График сравнения LVaR сохранен в: {output_path}")
+        print(f"График сравнения LVaR сохранен в: {output_path}")
     
     # Показываем график, если запрошено
     if show:
@@ -549,12 +549,12 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
     """
     if portfolio_df is None or portfolio_df.empty:
         if debug:
-            print("❌ Нет данных для построения графика")
+            print("Нет данных для построения графика")
         return None
     
     if not symbols or len(symbols) == 0:
         if debug:
-            print("❌ Нет символов для построения графика")
+            print("Нет символов для построения графика")
         return None
     
     # Убеждаемся, что Date в формате datetime
@@ -599,7 +599,7 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
         
         # Отладочная информация
         if debug:
-            print(f"  DEBUG plot_portfolio_with_weights: {symbol} weight = {weight}")
+            print(f"DEBUG plot_portfolio_with_weights: {symbol} weight = {weight}")
         
         # Формируем заголовок с весом, если он есть
         if weight is not None and not pd.isna(weight):
@@ -607,7 +607,7 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
         else:
             title = f'{symbol} - High и Low цены'
             if debug:
-                print(f"  DEBUG: Вес для {symbol} не найден в weights_dict!")
+                print(f"DEBUG: Вес для {symbol} не найден в weights_dict!")
         
         # Рисуем High и Low разными цветами (без веса в label, он в заголовке)
         ax.plot(dates, stock_data['High'], label='High', 
@@ -637,12 +637,12 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
     
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     if debug:
-        print(f"📊 График с весами сохранен в: {output_path}")
+        print(f"График с весами сохранен в: {output_path}")
     
     # Показываем график, если запрошено
     if show:
         if debug:
-            print("👁️  Показываем график...")
+            print("Показываем график...")
         plt.show()
         plt.close()
     else:
@@ -662,13 +662,13 @@ def print_debug_dates(portfolio_df, symbols, start_date, end_date):
         end_date (str): Запрошенная дата окончания
     """
     if portfolio_df is None or portfolio_df.empty:
-        print("❌ Нет данных для отладки")
+        print("Нет данных для отладки")
         return
     
     print("\n" + "=" * 60)
-    print("🐛 DEBUG: ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О РЕАЛЬНЫХ ДАТАХ")
+    print("DEBUG: ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О РЕАЛЬНЫХ ДАТАХ")
     print("=" * 60)
-    print(f"📅 Запрошенный период: {start_date} - {end_date}")
+    print(f"Запрошенный период: {start_date} - {end_date}")
     print()
     
     # Убеждаемся, что Date в формате datetime
@@ -680,7 +680,7 @@ def print_debug_dates(portfolio_df, symbols, start_date, end_date):
         stock_data = stock_data.sort_values('Date')
         
         if stock_data.empty:
-            print(f"❌ {symbol}: Нет данных")
+            print(f"{symbol}: Нет данных")
             continue
         
         # Получаем реальные даты
@@ -692,28 +692,28 @@ def print_debug_dates(portfolio_df, symbols, start_date, end_date):
         requested_start = pd.to_datetime(start_date)
         requested_end = pd.to_datetime(end_date)
         
-        print(f"📊 {symbol}:")
-        print(f"   Запрошено:     {start_date} - {end_date}")
-        print(f"   Реальный период:")
-        print(f"   • Первая дата:  {actual_first_date.strftime('%Y-%m-%d')} ", end="")
+        print(f"{symbol}:")
+        print(f"Запрошено:     {start_date} - {end_date}")
+        print(f"Реальный период:")
+        print(f"• Первая дата:  {actual_first_date.strftime('%Y-%m-%d')} ", end="")
         
         if actual_first_date > requested_start:
-            print(f"⚠️ (позже запрошенной на {(actual_first_date - requested_start).days} дн.)")
+            print(f"(позже запрошенной на {(actual_first_date - requested_start).days} дн.)")
         elif actual_first_date < requested_start:
-            print(f"✅ (раньше запрошенной на {(requested_start - actual_first_date).days} дн.)")
+            print(f"(раньше запрошенной на {(requested_start - actual_first_date).days} дн.)")
         else:
-            print("✅ (совпадает)")
+            print("(совпадает)")
         
-        print(f"   • Последняя дата: {actual_last_date.strftime('%Y-%m-%d')} ", end="")
+        print(f"• Последняя дата: {actual_last_date.strftime('%Y-%m-%d')} ", end="")
         
         if actual_last_date < requested_end:
-            print(f"⚠️ (раньше запрошенной на {(requested_end - actual_last_date).days} дн.)")
+            print(f"(раньше запрошенной на {(requested_end - actual_last_date).days} дн.)")
         elif actual_last_date > requested_end:
-            print(f"✅ (позже запрошенной на {(actual_last_date - requested_end).days} дн.)")
+            print(f"(позже запрошенной на {(actual_last_date - requested_end).days} дн.)")
         else:
-            print("✅ (совпадает)")
+            print("(совпадает)")
         
-        print(f"   • Всего дней данных: {num_days}")
+        print(f"• Всего дней данных: {num_days}")
         print()
     
     print("=" * 60)
@@ -734,12 +734,12 @@ def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_pat
     """
     if portfolio_df is None or portfolio_df.empty:
         if debug:
-            print("❌ Нет данных для построения графика")
+            print("Нет данных для построения графика")
         return None
     
     if not symbols or len(symbols) == 0:
         if debug:
-            print("❌ Нет успешно загруженных символов для построения графика")
+            print("Нет успешно загруженных символов для построения графика")
         return None
     
     # Создаем график
@@ -793,12 +793,12 @@ def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_pat
     
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     if debug:
-        print(f"📊 График сохранен в: {output_path}")
+        print(f"График сохранен в: {output_path}")
     
     # Показываем график, если запрошено
     if show:
         if debug:
-            print("👁️  Показываем график...")
+            print("Показываем график...")
         plt.show()
         # Закрываем фигуру после того, как пользователь закроет окно
         plt.close()
@@ -822,9 +822,9 @@ def quick_load_portfolio(symbols, years=3, portfolio_name=None):
     end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=years*365)).strftime('%Y-%m-%d')
     
-    print(f"🚀 Загрузка портфеля за последние {years} лет...")
-    print(f"📅 Период: {start_date} - {end_date}")
-    print(f"📊 Акции: {', '.join(symbols)}")
+    print(f"Загрузка портфеля за последние {years} лет...")
+    print(f"Период: {start_date} - {end_date}")
+    print(f"Акции: {', '.join(symbols)}")
     
     portfolio_df, successful_symbols = loader.load_portfolio_data(
         symbols=symbols,
@@ -843,7 +843,7 @@ def quick_load_single(symbol, years=3):
     end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=years*365)).strftime('%Y-%m-%d')
     
-    print(f"🚀 Загрузка {symbol} за последние {years} лет...")
+    print(f"Загрузка {symbol} за последние {years} лет...")
     
     df = loader.load_single_stock(symbol, start_date, end_date)
     return df
@@ -968,12 +968,12 @@ def main_cli():
     
     if args.debug:
         print("=" * 60)
-        print("🚀 ЗАГРУЗКА ДАННЫХ С MOEX")
+        print("ЗАГРУЗКА ДАННЫХ С MOEX")
         print("=" * 60)
-        print(f"📅 Период: {args.start_date} - {args.end_date}")
-        print(f"📊 Портфель: {', '.join(args.symbols)}")
+        print(f"Период: {args.start_date} - {args.end_date}")
+        print(f"Портфель: {', '.join(args.symbols)}")
         if args.portfolio_name:
-            print(f"📝 Название портфеля: {args.portfolio_name}")
+            print(f"Название портфеля: {args.portfolio_name}")
         print("=" * 60)
     
     portfolio_df, successful_symbols = loader.load_portfolio_data(
@@ -984,7 +984,7 @@ def main_cli():
     )
     
     if portfolio_df is None or portfolio_df.empty:
-        print("❌ Не удалось загрузить данные.")
+        print("Не удалось загрузить данные.")
         return
     
     # Определяем путь к сохраненному CSV файлу (файл уже сохранен в load_portfolio_data)
@@ -1006,7 +1006,7 @@ def main_cli():
             start_date=args.start_date,
             end_date=args.end_date
         )
-        print(f"\n💾 CSV сохранен в: {csv_path}")
+        print(f"\nCSV сохранен в: {csv_path}")
     
     # В обычном режиме выводим только путь к CSV (без лишнего текста)
     if not args.debug:
@@ -1016,7 +1016,7 @@ def main_cli():
     if args.plot:
         if args.debug:
             print("\n" + "=" * 60)
-            print("📊 СОЗДАНИЕ ГРАФИКА")
+            print("СОЗДАНИЕ ГРАФИКА")
             print("=" * 60)
         
         plot_output_path = plot_high_low_prices(
@@ -1036,7 +1036,7 @@ def main_cli():
     if args.weights:
         if args.debug:
             print("\n" + "=" * 60)
-            print("⚖️  РАСЧЕТ ОПТИМАЛЬНЫХ ВЕСОВ ПОРТФЕЛЯ")
+            print("РАСЧЕТ ОПТИМАЛЬНЫХ ВЕСОВ ПОРТФЕЛЯ")
             print("=" * 60)
         
         weights_dict, sigma, spread_array, tickers_ordered = calculate_optimal_weights(
@@ -1090,14 +1090,14 @@ def main_cli():
                 print("\nВеса портфеля:")
                 for symbol in successful_symbols:
                     if symbol in weights_dict:
-                        print(f"  {symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
+                        print(f"{symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
             # В debug режиме веса уже выведены в calculate_optimal_weights, не дублируем
         else:
-            print("❌ Не удалось рассчитать оптимальные веса")
+            print("Не удалось рассчитать оптимальные веса")
     
     if args.debug:
         print("\n" + "=" * 60)
-        print("✅ ЗАВЕРШЕНО")
+        print("ЗАВЕРШЕНО")
         print("=" * 60)
 
 
@@ -1108,10 +1108,10 @@ if __name__ == "__main__":
     # Если запущено без аргументов - показываем примеры старого использования
     if len(sys.argv) == 1:
         print("Использование CLI:")
-        print("  # Самый простой вариант (последние 3 года до вчера):")
-        print("  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --plot")
-        print("\n  # С указанием дат:")
-        print("  python run_moex_data_loader.py --start 2023-01-01 --end 2024-01-01 --portfolio SBER GAZP LKOH --plot")
+        print("# Самый простой вариант (последние 3 года до вчера):")
+        print("python run_moex_data_loader.py --portfolio SBER GAZP LKOH --plot")
+        print("\n# С указанием дат:")
+        print("python run_moex_data_loader.py --start 2023-01-01 --end 2024-01-01 --portfolio SBER GAZP LKOH --plot")
         print("\n" + "=" * 60)
         print("Запуск примеров старого формата:")
         print("=" * 60)
