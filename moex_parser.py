@@ -2,6 +2,7 @@
 import requests
 import pandas as pd
 import time
+from tqdm import tqdm
 from config import REQUEST_HEADERS, MOEX_BASE_URL, REQUEST_TIMEOUT
 
 class MoexParser:
@@ -97,6 +98,15 @@ class MoexParser:
         try:
             self._print(f"Запрос к MOEX API (с пагинацией)...")
             
+            # Инициализируем прогресс-бар
+            pbar = None
+            last_count = 0
+            if self.debug:
+                # Создаем прогресс-бар без общего количества (будет обновлен позже)
+                pbar = tqdm(total=None, desc=f"Загрузка {symbol}", unit=" записей", 
+                           bar_format='{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                           disable=False, ncols=100, dynamic_ncols=True)
+            
             while True:
                 params = {
                     'from': start_str,
@@ -112,6 +122,8 @@ class MoexParser:
                 if 'history' not in data:
                     if start_index == 0:
                         self._print("В ответе нет исторических данных")
+                        if pbar:
+                            pbar.close()
                         return None
                     break  # Если на первой странице нет данных - ошибка, иначе закончили пагинацию
                 
@@ -126,14 +138,26 @@ class MoexParser:
                 
                 all_rows.extend(page_rows)
                 
-                # Проверяем, есть ли еще данные
+                # Обновляем прогресс-бар
+                if pbar is not None:
+                    # Обновляем на количество новых записей
+                    new_count = len(all_rows) - last_count
+                    if new_count > 0:
+                        pbar.update(new_count)
+                        last_count = len(all_rows)
+                
+                # Проверяем, есть ли еще данные и общее количество
                 total_records = None
                 if 'history.cursor' in data and 'data' in data['history.cursor']:
                     cursor_data = data['history.cursor']['data']
                     if cursor_data and len(cursor_data) > 0:
                         # Формат: [INDEX, TOTAL, PAGESIZE]
                         total_records = cursor_data[0][1] if len(cursor_data[0]) > 1 else None
-                        self._print(f"Загружено {len(all_rows)} из {total_records or '?'} записей...")
+                        
+                        # Обновляем общее количество в прогресс-баре
+                        if pbar is not None and total_records:
+                            if pbar.total is None or pbar.total != total_records:
+                                pbar.total = total_records
                 
                 # Если получили меньше записей, чем запросили - это последняя страница
                 if len(page_rows) < page_size:
@@ -150,9 +174,21 @@ class MoexParser:
                     self._print("Достигнут максимум 10000 записей, прекращаем загрузку")
                     break
             
+            # Закрываем прогресс-бар
+            if pbar is not None:
+                # Обновляем до финального значения, если нужно
+                final_count = len(all_rows) - last_count
+                if final_count > 0:
+                    pbar.update(final_count)
+                if pbar.total is None:
+                    pbar.total = len(all_rows)
+                pbar.close()
+            
             rows = all_rows
             
-            self._print(f"Всего получено {len(rows)} записей")
+            # Не выводим "Всего получено" если был прогресс-бар (он уже показал финальное значение)
+            if not self.debug:
+                self._print(f"Всего получено {len(rows)} записей")
             
             if not rows:
                 self._print("Нет данных за указанный период")
