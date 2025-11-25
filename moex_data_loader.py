@@ -75,10 +75,7 @@ class MoexDataLoader:
             time.sleep(1)  # Пауза между запросами
         
         if not all_data:
-            if not self.debug:
-                print("❌ Не удалось загрузить данные ни по одной акции")
-            else:
-                self._print("❌ Не удалось загрузить данные ни по одной акции")
+            self._print("❌ Не удалось загрузить данные ни по одной акции")
             return None, []
         
         # Объединяем все данные
@@ -146,10 +143,7 @@ class MoexDataLoader:
             self._save_individual_stock(df, symbol, start_date, end_date)
             return df
         else:
-            if not self.debug:
-                print(f"❌ Не удалось загрузить данные для {symbol}")
-            else:
-                self._print(f"❌ Не удалось загрузить данные для {symbol}")
+            self._print(f"❌ Не удалось загрузить данные для {symbol}")
             return None
     
     def list_saved_data(self):

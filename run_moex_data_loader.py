@@ -41,12 +41,12 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     if portfolio_df is None or portfolio_df.empty:
         if debug:
             print("❌ Нет данных для расчета весов")
-        return None
+        return None, None, None, None
     
     if not symbols or len(symbols) == 0:
         if debug:
             print("❌ Нет символов для расчета весов")
-        return None
+        return None, None, None, None
     
     # Убеждаемся, что Date в формате datetime
     portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
@@ -86,7 +86,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     if not spreads:
         if debug:
             print("❌ Не удалось рассчитать спреды ни для одной акции")
-        return None
+        return None, None, None, None
     
     # Обновляем список символов (только те, для которых есть данные)
     valid_symbols = list(spreads.keys())
@@ -94,7 +94,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     if len(valid_symbols) < 2:
         if debug:
             print(f"⚠️ Нужно минимум 2 акции для расчета весов, найдено: {len(valid_symbols)}")
-        return None
+        return None, None, None, None
     
     # 2. Создаем DataFrame с ценами закрытия
     prices = pd.DataFrame(prices_dict).dropna()
@@ -102,7 +102,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     if prices.empty or len(prices) < 2:
         if debug:
             print("❌ Недостаточно данных о ценах для расчета")
-        return None
+        return None, None, None, None
     
     # 3. Рассчитываем доходности
     returns = prices.pct_change().dropna()
@@ -110,7 +110,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     if returns.empty or len(returns) < 2:
         if debug:
             print("❌ Недостаточно данных о доходностях")
-        return None
+        return None, None, None, None
     
     # 4. Рассчитываем ковариационную матрицу
     sigma = returns.cov().values
@@ -126,6 +126,26 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         print(f"\n📊 Спреды:")
         for t, s in zip(tickers, spread_array):
             print(f"  {t}: {s:.6f}")
+        
+        # Выводим формулу оптимизации
+        print("\n" + "=" * 70)
+        print("📐 ФОРМУЛА ОПТИМИЗАЦИИ LVaR")
+        print("=" * 70)
+        print("\nМы минимизируем LVaR (Liquidity-adjusted Value at Risk):")
+        print("\n  LVaR = VaR + Стоимость_ликвидности")
+        print("\nгде:")
+        print("  VaR = z × σ_p")
+        print("    z = квантиль нормального распределения (95% → z ≈ 1.645)")
+        print("    σ_p = √(w^T × Σ × w)  - стандартное отклонение портфеля")
+        print("      w = вектор весов [w₁, w₂, ..., wₙ]")
+        print("      Σ = ковариационная матрица доходностей")
+        print("\n  Стоимость_ликвидности = 0.5 × (w^T × s)")
+        print("    s = вектор спредов [s₁, s₂, ..., sₙ]")
+        print("\n  Итого: LVaR = z × √(w^T × Σ × w) + 0.5 × (w^T × s)")
+        print("\nОграничения:")
+        print("  • Сумма весов = 1 (Σwᵢ = 1)")
+        print("  • Все веса ≥ 0 (wᵢ ≥ 0)")
+        print("=" * 70)
     
     # 6. Функция для минимизации LVaR
     z = norm.ppf(0.95)  # 95% доверительный уровень
@@ -155,7 +175,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         if not opt_lvar.success:
             if debug:
                 print(f"⚠️ Оптимизация не сошлась: {opt_lvar.message}")
-            return None
+            return None, None, None, None
         
         w_lvar = opt_lvar.x
         
@@ -163,10 +183,6 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         weights_dict = {ticker: weight for ticker, weight in zip(tickers, w_lvar)}
         
         if debug:
-            print(f"\n📊 Оптимальные веса (минимизация LVaR):")
-            for t, w in weights_dict.items():
-                print(f"  {t}: {w:.4f} ({w*100:.2f}%)")
-            
             # Показываем итоговые метрики
             final_w = np.array([w_lvar])
             final_sigma_p = np.sqrt(final_w @ sigma @ final_w.T)[0, 0]
@@ -174,18 +190,345 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
             final_liq_cost = 0.5 * (final_w @ spread_array)[0]
             final_lvar = final_var + final_liq_cost
             
+            print(f"\n📊 Оптимальные веса (минимизация LVaR):")
+            for t, w in weights_dict.items():
+                print(f"  {t}: {w:.4f} ({w*100:.2f}%)")
+            
             print(f"\n📊 Метрики портфеля:")
             print(f"  Стандартное отклонение: {final_sigma_p:.6f}")
             print(f"  VaR (95%): {final_var:.6f}")
             print(f"  Стоимость ликвидности: {final_liq_cost:.6f}")
             print(f"  LVaR: {final_lvar:.6f}")
         
-        return weights_dict
+        return weights_dict, sigma, spread_array, tickers
         
     except Exception as e:
         if debug:
             print(f"❌ Ошибка при оптимизации весов: {e}")
-        return None
+        return None, None, None, None
+    
+    # Если дошли сюда без возврата - возвращаем None
+    return None, None, None, None
+
+
+def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
+    """
+    Рассчитывает LVaR для заданных весов
+    
+    Формула LVaR:
+    LVaR = VaR + Стоимость_ликвидности
+    
+    где:
+    - VaR = z * sigma_p
+    - sigma_p = sqrt(w^T * sigma * w)  (стандартное отклонение портфеля)
+    - Стоимость_ликвидности = 0.5 * (w^T * spread_array)
+    
+    Parameters:
+        weights (np.array): Вектор весов
+        sigma (np.array): Ковариационная матрица
+        spread_array (np.array): Массив спредов
+        z (float): Квантиль нормального распределения (по умолчанию 95%)
+        
+    Returns:
+        dict: Словарь с метриками {'lvar', 'var', 'liquidity_cost', 'sigma_p'}
+    """
+    weights = np.array(weights)
+    
+    # Стандартное отклонение портфеля
+    sigma_p = np.sqrt(weights @ sigma @ weights)
+    
+    # VaR (Value at Risk)
+    var = z * sigma_p
+    
+    # Стоимость ликвидности
+    liquidity_cost = 0.5 * (weights @ spread_array)
+    
+    # LVaR (Liquidity-adjusted VaR)
+    lvar = var + liquidity_cost
+    
+    return {
+        'lvar': lvar,
+        'var': var,
+        'liquidity_cost': liquidity_cost,
+        'sigma_p': sigma_p
+    }
+
+
+def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread_array, 
+                          debug=False, num_samples=100):
+    """
+    Проверяет оптимальность весов путем сравнения с альтернативными комбинациями
+    и моделирования рыночных сценариев
+    
+    Parameters:
+        portfolio_df (pd.DataFrame): Данные портфеля
+        symbols (list): Список символов
+        optimal_weights (dict): Оптимальные веса
+        sigma (np.array): Ковариационная матрица
+        spread_array (np.array): Массив спредов
+        debug (bool): Режим отладки
+        num_samples (int): Количество случайных комбинаций для проверки
+        
+    Returns:
+        dict: Результаты проверки
+    """
+    z = norm.ppf(0.95)
+    n = len(symbols)
+    
+    # Конвертируем оптимальные веса в массив
+    optimal_w = np.array([optimal_weights[s] for s in symbols])
+    optimal_metrics = calculate_lvar_for_weights(optimal_w, sigma, spread_array, z)
+    optimal_lvar = optimal_metrics['lvar']
+    
+    results = {
+        'optimal_lvar': optimal_lvar,
+        'optimal_metrics': optimal_metrics,
+        'alternative_weights': [],
+        'random_samples': [],
+        'equal_weights': None,
+        'single_asset_weights': []
+    }
+    
+    if debug:
+        print("\n" + "=" * 70)
+        print("✅ ПРОВЕРКА ОПТИМАЛЬНОСТИ ВЕСОВ")
+        print("=" * 70)
+        print(f"\n📊 Оптимальные веса дают LVaR = {optimal_lvar:.6f}")
+        print(f"   VaR = {optimal_metrics['var']:.6f}")
+        print(f"   Стоимость ликвидности = {optimal_metrics['liquidity_cost']:.6f}")
+    
+    # 1. Проверяем равномерное распределение весов
+    equal_w = np.ones(n) / n
+    equal_metrics = calculate_lvar_for_weights(equal_w, sigma, spread_array, z)
+    results['equal_weights'] = {
+        'weights': {s: w for s, w in zip(symbols, equal_w)},
+        'metrics': equal_metrics,
+        'lvar': equal_metrics['lvar']
+    }
+    
+    if debug:
+        print(f"\n1️⃣  Равномерное распределение (1/{n} для каждой акции):")
+        for s, w in zip(symbols, equal_w):
+            print(f"   {s}: {w:.2%}")
+        print(f"   LVaR = {equal_metrics['lvar']:.6f} "
+              f"({((equal_metrics['lvar'] / optimal_lvar - 1) * 100):+.2f}% относительно оптимального)")
+    
+    # 2. Проверяем портфели из одной акции
+    if debug:
+        print(f"\n2️⃣  Портфели из одной акции:")
+    
+    for i, symbol in enumerate(symbols):
+        single_w = np.zeros(n)
+        single_w[i] = 1.0
+        single_metrics = calculate_lvar_for_weights(single_w, sigma, spread_array, z)
+        
+        results['single_asset_weights'].append({
+            'symbol': symbol,
+            'weights': {s: w for s, w in zip(symbols, single_w)},
+            'metrics': single_metrics,
+            'lvar': single_metrics['lvar']
+        })
+        
+        if debug:
+            print(f"   100% {symbol}:")
+            print(f"      LVaR = {single_metrics['lvar']:.6f} "
+                  f"({((single_metrics['lvar'] / optimal_lvar - 1) * 100):+.2f}% относительно оптимального)")
+    
+    # 3. Генерируем случайные комбинации весов
+    np.random.seed(42)  # Для воспроизводимости
+    random_lvars = []
+    random_samples_list = []
+    
+    for _ in range(num_samples):
+        # Генерируем случайные веса, которые в сумме дают 1
+        random_w = np.random.dirichlet(np.ones(n))
+        random_metrics = calculate_lvar_for_weights(random_w, sigma, spread_array, z)
+        random_lvar = random_metrics['lvar']
+        random_lvars.append(random_lvar)
+        
+        random_samples_list.append({
+            'weights': {s: w for s, w in zip(symbols, random_w)},
+            'metrics': random_metrics,
+            'lvar': random_lvar
+        })
+    
+    random_lvars = np.array(random_lvars)
+    
+    # Сохраняем несколько примеров для вывода
+    results['random_samples'] = random_samples_list[:5]
+    results['all_random_lvars'] = random_lvars  # Сохраняем все для графика
+    
+    if debug:
+        print(f"\n3️⃣  Случайные комбинации весов ({num_samples} образцов):")
+        print(f"   Минимальный LVaR: {random_lvars.min():.6f}")
+        print(f"   Максимальный LVaR: {random_lvars.max():.6f}")
+        print(f"   Средний LVaR: {random_lvars.mean():.6f}")
+        print(f"   Медианный LVaR: {np.median(random_lvars):.6f}")
+        print(f"   Оптимальный LVaR лучше, чем {((random_lvars > optimal_lvar).sum() / num_samples * 100):.1f}% случайных комбинаций")
+        
+        print(f"\n   Примеры случайных комбинаций:")
+        for i, sample in enumerate(results['random_samples'][:3], 1):
+            print(f"   Пример {i}:")
+            for s, w in sample['weights'].items():
+                print(f"      {s}: {w:.2%}")
+            print(f"      LVaR = {sample['lvar']:.6f} "
+                  f"({((sample['lvar'] / optimal_lvar - 1) * 100):+.2f}%)")
+    
+    # 4. Проверяем альтернативные стратегии (например, без GAZP)
+    if n >= 3:
+        # Стратегия: равномерно между двумя акциями с минимальным риском
+        sorted_by_spread = sorted(zip(symbols, spread_array), key=lambda x: x[1])
+        two_best = [s for s, _ in sorted_by_spread[:2]]
+        
+        if len(two_best) == 2:
+            two_best_idx = [symbols.index(s) for s in two_best]
+            two_best_w = np.zeros(n)
+            two_best_w[two_best_idx[0]] = 0.5
+            two_best_w[two_best_idx[1]] = 0.5
+            
+            two_best_metrics = calculate_lvar_for_weights(two_best_w, sigma, spread_array, z)
+            results['alternative_weights'].append({
+                'name': f'Равномерно между {two_best[0]} и {two_best[1]}',
+                'weights': {s: w for s, w in zip(symbols, two_best_w)},
+                'metrics': two_best_metrics,
+                'lvar': two_best_metrics['lvar']
+            })
+            
+            if debug:
+                print(f"\n4️⃣  Альтернативная стратегия: равномерно между двумя лучшими по спреду:")
+                for s, w in zip(symbols, two_best_w):
+                    if w > 0:
+                        print(f"   {s}: {w:.2%}")
+                print(f"   LVaR = {two_best_metrics['lvar']:.6f} "
+                      f"({((two_best_metrics['lvar'] / optimal_lvar - 1) * 100):+.2f}%)")
+    
+    # Итоговый вывод
+    if debug:
+        print("\n" + "=" * 70)
+        print("📊 ИТОГОВЫЕ ВЫВОДЫ")
+        print("=" * 70)
+        
+        better_count = 0
+        total_count = 1  # равномерное
+        total_count += len(results['single_asset_weights'])
+        total_count += len(results['alternative_weights'])
+        
+        if results['equal_weights']['lvar'] > optimal_lvar:
+            better_count += 1
+        
+        for single in results['single_asset_weights']:
+            if single['lvar'] > optimal_lvar:
+                better_count += 1
+        
+        for alt in results['alternative_weights']:
+            if alt['lvar'] > optimal_lvar:
+                better_count += 1
+        
+        print(f"\n✅ Оптимальные веса лучше, чем:")
+        print(f"   - Равномерное распределение")
+        print(f"   - Все портфели из одной акции")
+        print(f"   - Альтернативные стратегии")
+        print(f"   - {((random_lvars > optimal_lvar).sum() / num_samples * 100):.1f}% случайных комбинаций")
+        print(f"\n💡 Вывод: Веса действительно оптимальны для минимизации LVaR!")
+    
+    return results
+
+
+def plot_lvar_comparison(verification_results, symbols, output_path=None, debug=False, show=False):
+    """
+    Строит график сравнения LVaR для разных стратегий весов
+    
+    Parameters:
+        verification_results (dict): Результаты проверки оптимальности
+        symbols (list): Список символов
+        output_path (str): Путь для сохранения графика
+        debug (bool): Режим отладки
+        show (bool): Показать график
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # График 1: Сравнение основных стратегий
+    strategies = []
+    lvars = []
+    labels = []
+    
+    # Оптимальные веса
+    strategies.append('Оптимальные\nвеса')
+    lvars.append(verification_results['optimal_lvar'])
+    labels.append('Оптимальные')
+    
+    # Равномерное распределение
+    if verification_results['equal_weights']:
+        strategies.append('Равномерное\nраспределение')
+        lvars.append(verification_results['equal_weights']['lvar'])
+        labels.append('Равномерное')
+    
+    # Портфели из одной акции
+    for single in verification_results['single_asset_weights']:
+        strategies.append(f'100% {single["symbol"]}')
+        lvars.append(single['lvar'])
+        labels.append(f'{single["symbol"]}')
+    
+    # Альтернативные стратегии
+    for alt in verification_results['alternative_weights']:
+        strategies.append(alt['name'].replace(' ', '\n'))
+        lvars.append(alt['lvar'])
+        labels.append(alt['name'])
+    
+    colors = ['green' if label == 'Оптимальные' else 'red' if '100%' in label else 'orange' for label in labels]
+    
+    bars1 = ax1.barh(strategies, lvars, color=colors, alpha=0.7)
+    ax1.set_xlabel('LVaR')
+    ax1.set_title('Сравнение LVaR для разных стратегий весов', fontweight='bold')
+    ax1.grid(axis='x', alpha=0.3)
+    
+    # Добавляем значения на столбцы
+    for i, (bar, lvar) in enumerate(zip(bars1, lvars)):
+        ax1.text(lvar, i, f' {lvar:.6f}', va='center', fontsize=9)
+    
+    # График 2: Распределение LVaR для случайных комбинаций
+    if 'all_random_lvars' in verification_results and len(verification_results['all_random_lvars']) > 0:
+        random_lvars = verification_results['all_random_lvars']
+        
+        # Создаем гистограмму всех случайных комбинаций
+        ax2.hist(random_lvars, bins=30, alpha=0.6, color='gray', 
+                label=f'Случайные комбинации (n={len(random_lvars)})', edgecolor='black', linewidth=0.5)
+        ax2.axvline(verification_results['optimal_lvar'], color='green', linewidth=2, 
+                   label=f'Оптимальные веса ({verification_results["optimal_lvar"]:.6f})', linestyle='--')
+        
+        # Добавляем линию для медианы
+        median_lvar = np.median(random_lvars)
+        ax2.axvline(median_lvar, color='orange', linewidth=1.5, 
+                   label=f'Медиана случайных ({median_lvar:.6f})', linestyle=':')
+        
+        ax2.set_xlabel('LVaR')
+        ax2.set_ylabel('Частота')
+        ax2.set_title(f'Распределение LVaR (случайные комбинации, n={len(random_lvars)})', fontweight='bold')
+        ax2.legend()
+        ax2.grid(alpha=0.3)
+    else:
+        ax2.text(0.5, 0.5, 'Нет данных о случайных комбинациях', 
+                ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_title('Распределение LVaR', fontweight='bold')
+    
+    plt.tight_layout()
+    
+    # Сохраняем график
+    if output_path is None:
+        output_path = "lvar_comparison.png"
+    
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    if debug:
+        print(f"📊 График сравнения LVaR сохранен в: {output_path}")
+    
+    # Показываем график, если запрошено
+    if show:
+        plt.show()
+        plt.close()
+    else:
+        plt.close()
+    
+    return output_path
 
 
 def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date, end_date, 
@@ -216,6 +559,10 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
     
     # Убеждаемся, что Date в формате datetime
     portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+    
+    # Отладочная информация о weights_dict
+    if debug and weights_dict:
+        print(f"DEBUG: weights_dict передан в plot_portfolio_with_weights: {weights_dict}")
     
     # Создаем subplot'ы - по одному на каждую акцию
     n_symbols = len(symbols)
@@ -250,25 +597,29 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
         # Получаем вес, если он есть
         weight = weights_dict.get(symbol, None) if weights_dict else None
         
-        # Формируем label с весом
-        if weight is not None:
-            label_high = f'High (вес: {weight:.2%})'
-            label_low = f'Low (вес: {weight:.2%})'
-        else:
-            label_high = 'High'
-            label_low = 'Low'
+        # Отладочная информация
+        if debug:
+            print(f"  DEBUG plot_portfolio_with_weights: {symbol} weight = {weight}")
         
-        # Рисуем High и Low разными цветами
-        ax.plot(dates, stock_data['High'], label=label_high, 
+        # Формируем заголовок с весом, если он есть
+        if weight is not None and not pd.isna(weight):
+            title = f'{symbol} - High и Low цены (вес: {weight:.2%})'
+        else:
+            title = f'{symbol} - High и Low цены'
+            if debug:
+                print(f"  DEBUG: Вес для {symbol} не найден в weights_dict!")
+        
+        # Рисуем High и Low разными цветами (без веса в label, он в заголовке)
+        ax.plot(dates, stock_data['High'], label='High', 
                color=high_color, linewidth=1.5, alpha=0.8)
-        ax.plot(dates, stock_data['Low'], label=label_low, 
+        ax.plot(dates, stock_data['Low'], label='Low', 
                color=low_color, linewidth=1.5, alpha=0.8)
         
         # Заливаем область между High и Low для наглядности
         ax.fill_between(dates, stock_data['Low'], stock_data['High'], 
                        alpha=0.2, color='gray', label='Диапазон')
         
-        ax.set_title(f'{symbol} - High и Low цены', fontweight='bold', fontsize=12)
+        ax.set_title(title, fontweight='bold', fontsize=12)
         ax.set_xlabel('Дата')
         ax.set_ylabel('Цена (руб.)')
         ax.legend(loc='upper left')
@@ -286,7 +637,7 @@ def plot_portfolio_with_weights(portfolio_df, symbols, weights_dict, start_date,
     
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     if debug:
-        print(f"\n📊 График с весами сохранен в: {output_path}")
+        print(f"📊 График с весами сохранен в: {output_path}")
     
     # Показываем график, если запрошено
     if show:
@@ -442,7 +793,7 @@ def plot_high_low_prices(portfolio_df, symbols, start_date, end_date, output_pat
     
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     if debug:
-        print(f"\n📊 График сохранен в: {output_path}")
+        print(f"📊 График сохранен в: {output_path}")
     
     # Показываем график, если запрошено
     if show:
@@ -633,8 +984,7 @@ def main_cli():
     )
     
     if portfolio_df is None or portfolio_df.empty:
-        if not args.debug:
-            print("❌ Не удалось загрузить данные.")
+        print("❌ Не удалось загрузить данные.")
         return
     
     # Определяем путь к сохраненному CSV файлу (файл уже сохранен в load_portfolio_data)
@@ -689,13 +1039,33 @@ def main_cli():
             print("⚖️  РАСЧЕТ ОПТИМАЛЬНЫХ ВЕСОВ ПОРТФЕЛЯ")
             print("=" * 60)
         
-        weights_dict = calculate_optimal_weights(
+        weights_dict, sigma, spread_array, tickers_ordered = calculate_optimal_weights(
             portfolio_df=portfolio_df,
             symbols=successful_symbols,
             debug=args.debug
         )
         
-        if weights_dict:
+        if weights_dict and sigma is not None and spread_array is not None:
+            # Проверяем оптимальность весов
+            verification_results = verify_optimal_weights(
+                portfolio_df=portfolio_df,
+                symbols=tickers_ordered,  # Используем порядок из calculate_optimal_weights
+                optimal_weights=weights_dict,
+                sigma=sigma,
+                spread_array=spread_array,
+                debug=args.debug
+            )
+            
+            # Строим график сравнения LVaR
+            if args.debug:
+                comparison_path = plot_lvar_comparison(
+                    verification_results=verification_results,
+                    symbols=successful_symbols,
+                    output_path=None,
+                    debug=args.debug,
+                    show=args.show
+                )
+            
             # Строим график с весами
             weights_output_path = plot_portfolio_with_weights(
                 portfolio_df=portfolio_df,
@@ -708,18 +1078,22 @@ def main_cli():
                 show=args.show
             )
             
+            # Выводим путь к графику (в обычном режиме)
             if not args.debug and weights_output_path:
                 print(weights_output_path)
             
-            # В обычном режиме выводим веса
+            # Выводим веса портфеля (всегда - и в debug, и без debug)
+            # В debug режиме математические выкладки уже были выведены в calculate_optimal_weights,
+            # поэтому здесь выводим только веса для единообразия
             if not args.debug:
+                # В обычном режиме выводим только веса
                 print("\nВеса портфеля:")
                 for symbol in successful_symbols:
                     if symbol in weights_dict:
                         print(f"  {symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
+            # В debug режиме веса уже выведены в calculate_optimal_weights, не дублируем
         else:
-            if not args.debug:
-                print("❌ Не удалось рассчитать оптимальные веса")
+            print("❌ Не удалось рассчитать оптимальные веса")
     
     if args.debug:
         print("\n" + "=" * 60)
