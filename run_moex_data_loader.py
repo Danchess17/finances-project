@@ -10,6 +10,11 @@ import numpy as np
 import os
 from scipy.stats import norm
 from scipy.optimize import minimize
+from backtesting import (
+    backtest_weights,
+    walk_forward_analysis,
+    plot_backtest_results
+)
 
 
 def compute_corwin_schultz_spread(df):
@@ -255,7 +260,10 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
             print(f"Стоимость ликвидности: {final_metrics['liquidity_cost']:.6f}")
             print(f"LVaR: {final_metrics['lvar']:.6f}")
         
-        return weights_dict, sigma, spreads_dict, tickers
+        # Возвращаем массив медиан спредов для обратной совместимости
+        spread_medians_array = np.array([spreads_dict[t].median() for t in tickers])
+        
+        return weights_dict, sigma, spread_medians_array, tickers
         
     except Exception as e:
         if debug:
@@ -263,22 +271,47 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
         return None, None, None, None
 
 
-def compute_lvar(weights, sigma, spreads_data, z=norm.ppf(0.95), kappa=1.0):
+def compute_lvar(weights, sigma, spreads_data, z=norm.ppf(0.95)):
+    """
+    Единый метод для расчета LVaR (Liquidity-adjusted Value at Risk)
+
+    Формула LVaR:
+    LVaR = VaR + Стоимость_ликвидности
+
+    где:
+    - VaR = z * sigma_p
+    - sigma_p = sqrt(w^T * sigma * w)  (стандартное отклонение портфеля)
+    - Стоимость_ликвидности = 0.5 * (w^T * spread_medians)
+
+    Parameters:
+        weights (np.array): Вектор весов
+        sigma (np.array): Ковариационная матрица
+        spreads_data (dict или list/np.array): Если dict - {symbol: pd.Series спредов},
+                                             если list/np.array - уже медианы спредов (для обратной совместимости)
+        z (float): Квантиль нормального распределения (по умолчанию 95%)
+
+    Returns:
+        dict: Словарь с метриками {'lvar', 'var', 'liquidity_cost', 'sigma_p'}
+    """
     weights = np.array(weights)
 
-    assert isinstance(spreads_data, dict)
-
-    sigma_s = np.cov(np.vstack(list(spreads_data.values())))
+    # Обрабатываем spreads_data: если это dict со списком/Series спредов, вычисляем медианы
+    if isinstance(spreads_data, dict):
+        # Убеждаемся, что порядок символов в spreads_data соответствует порядку весов
+        spread_medians = np.array([spreads_data[symbol].median() if hasattr(spreads_data[symbol], 'median') else spreads_data[symbol]
+                                   for symbol in spreads_data.keys()])
+    else:
+        # Уже массив медиан (для обратной совместимости)
+        spread_medians = np.array(spreads_data)
 
     sigma_p = np.sqrt(weights @ sigma @ weights)
-
-    liquidity_cost = 0.5 * kappa * np.sqrt(weights @ sigma_s @ weights)
-
-    lvar = z * sigma_p + liquidity_cost
+    var = z * sigma_p
+    liquidity_cost = 0.5 * (weights @ spread_medians)
+    lvar = var + liquidity_cost
 
     return {
         'lvar': lvar,
-        'var': (z * sigma_p),
+        'var': var,
         'liquidity_cost': liquidity_cost,
         'sigma_p': sigma_p
     }
@@ -928,6 +961,18 @@ def main_cli():
   
   # Расчет весов с показом графика
   python run_moex_data_loader.py --portfolio SBER GAZP LKOH --weights --show --debug
+  
+  # Бектестинг оптимальных весов (train/test разделение)
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --backtest
+  
+  # Бектестинг с подробной информацией
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --backtest --debug
+  
+  # Walk-forward анализ (скользящее окно)
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --walk-forward --debug
+  
+  # Бектестинг с методом Корвина-Шульца
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --backtest --corwin-schultz
         """
     )
     
@@ -992,6 +1037,34 @@ def main_cli():
                        dest='debug',
                        action='store_true',
                        help='Показать подробную информацию о реальных датах загрузки для каждой акции')
+    
+    parser.add_argument('--backtest',
+                       dest='backtest',
+                       action='store_true',
+                       help='Провести бектестинг оптимальных весов (train/test разделение)')
+    
+    parser.add_argument('--train-ratio',
+                       dest='train_ratio',
+                       type=float,
+                       default=0.7,
+                       help='Доля данных для обучения при бектестинге (по умолчанию: 0.7 = 70%%)')
+    
+    parser.add_argument('--walk-forward',
+                       dest='walk_forward',
+                       action='store_true',
+                       help='Провести walk-forward анализ (скользящее окно)')
+    
+    parser.add_argument('--window-size',
+                       dest='window_size_days',
+                       type=int,
+                       default=180,
+                       help='Размер окна для walk-forward анализа в днях (по умолчанию: 180 = 6 месяцев)')
+    
+    parser.add_argument('--step-size',
+                       dest='step_size_days',
+                       type=int,
+                       default=30,
+                       help='Шаг сдвига окна для walk-forward анализа в днях (по умолчанию: 30 = 1 месяц)')
 
     if len(sys.argv) == 1:
             parser.print_help()
@@ -1133,6 +1206,67 @@ def main_cli():
                         print(f"{symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
         else:
             print("Не удалось рассчитать оптимальные веса")
+    
+    if args.backtest:
+        if args.debug:
+            print("\n" + "=" * 60)
+            print("БЕКТЕСТИНГ ОПТИМАЛЬНЫХ ВЕСОВ")
+            print("=" * 60)
+        
+        backtest_results = backtest_weights(
+            portfolio_df=portfolio_df,
+            symbols=successful_symbols,
+            train_ratio=args.train_ratio,
+            debug=args.debug,
+            use_corwin_schultz=args.use_corwin_schultz
+        )
+        
+        if backtest_results:
+            # Показываем краткие результаты в обычном режиме
+            if not args.debug:
+                metrics = backtest_results['metrics']
+                print(f"\nРезультаты бектестинга:")
+                print(f"  Ошибка прогноза: {metrics['lvar_error']:.6f} ({metrics['lvar_error_pct']:+.2f}%)")
+                if metrics.get('improvement_vs_equal_pct') is not None:
+                    print(f"  Улучшение vs равные веса: {metrics['improvement_vs_equal_pct']:+.2f}%")
+                print(f"  Hit rate: {'✓' if metrics['hit_rate'] else '✗'}")
+            
+            # Строим график результатов бектеста, если запрошено
+            if args.plot or args.show:
+                backtest_plot_path = plot_backtest_results(
+                    backtest_results=backtest_results,
+                    output_path=None if not args.plot_output else args.plot_output.replace('.png', '_backtest.png'),
+                    show=args.show
+                )
+                if not args.debug and backtest_plot_path:
+                    print(backtest_plot_path)
+        else:
+            if not args.debug:
+                print("Не удалось провести бектестинг")
+    
+    if args.walk_forward:
+        if args.debug:
+            print("\n" + "=" * 60)
+            print("WALK-FORWARD ANALYSIS")
+            print("=" * 60)
+        
+        walk_forward_results = walk_forward_analysis(
+            portfolio_df=portfolio_df,
+            symbols=successful_symbols,
+            window_size_days=args.window_size_days,
+            step_size_days=args.step_size_days,
+            debug=args.debug,
+            use_corwin_schultz=args.use_corwin_schultz
+        )
+        
+        if walk_forward_results:
+            if not args.debug:
+                avg_lvar = np.mean([r['realized_lvar'] for r in walk_forward_results])
+                print(f"\nWalk-forward анализ: {len(walk_forward_results)} окон")
+                print(f"  Средний реализованный LVaR: {avg_lvar:.6f}")
+        else:
+            if not args.debug:
+                print("Не удалось провести walk-forward анализ")
     
     if args.debug:
         print("\n" + "=" * 60)
