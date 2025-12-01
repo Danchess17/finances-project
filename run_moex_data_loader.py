@@ -139,10 +139,6 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
         stock_data_indexed = stock_data.set_index('Date')
         prices_dict[symbol] = stock_data_indexed['Close']
         
-        if debug:
-            spread_median = spread_array.median()
-            print(f"{symbol}: спред = {spread_median:.6f}")
-    
     if not spreads:
         if debug:
             print("Не удалось рассчитать спреды ни для одной акции")
@@ -188,26 +184,6 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
             spread_median = spreads[t].median()
             print(f"{t}: {spread_median:.6f}")
         
-        # Выводим формулу оптимизации
-        print("\n" + "=" * 70)
-        print("ФОРМУЛА ОПТИМИЗАЦИИ LVaR")
-        print("=" * 70)
-        print("\nМы минимизируем LVaR (Liquidity-adjusted Value at Risk):")
-        print("\nLVaR = VaR + Стоимость_ликвидности")
-        print("\nгде:")
-        print("VaR = z × σ_p")
-        print("z = квантиль нормального распределения (95% → z ≈ 1.645)")
-        print("σ_p = √(w^T × Σ × w)  - стандартное отклонение портфеля")
-        print("w = вектор весов [w₁, w₂, ..., wₙ]")
-        print("Σ = ковариационная матрица доходностей")
-        print("\nСтоимость_ликвидности = 0.5 × (w^T × s)")
-        print("s = вектор спредов [s₁, s₂, ..., sₙ]")
-        print("\nИтого: LVaR = z × √(w^T × Σ × w) + 0.5 × (w^T × s)")
-        print("\nОграничения:")
-        print("• Сумма весов = 1 (Σwᵢ = 1)")
-        print("• Все веса ≥ 0 (wᵢ ≥ 0)")
-        print("=" * 70)
-    
     # 6. Функция для минимизации LVaR (использует единый метод compute_lvar)
     z = norm.ppf(0.95)  # 95% доверительный уровень
     
@@ -254,6 +230,9 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
             print(f"VaR (95%): {final_metrics['var']:.6f}")
             print(f"Стоимость ликвидности: {final_metrics['liquidity_cost']:.6f}")
             print(f"LVaR: {final_metrics['lvar']:.6f}")
+
+            if debug:
+                plot_lvar_contribution(w_lvar, sigma, np.cov(np.vstack(list(spreads_dict.values()))), tickers)
         
         return weights_dict, sigma, spreads_dict, tickers
         
@@ -1265,6 +1244,55 @@ def quick_load_single(symbol, years=3):
     return df
 
 
+def plot_lvar_contribution(w_lvar, sigma, sigma_s, tickers, z=norm.ppf(0.95), kappa=1):
+    w = np.array(w_lvar)
+
+    port_cov = sigma @ w
+    port_cov_s = sigma_s @ w
+
+    sigma_p = np.sqrt(w @ sigma @ w)
+    sigma_s_p = np.sqrt(w @ sigma_s @ w)
+
+    if sigma_p == 0:
+        mc_var = np.zeros_like(w)
+    else:
+        mc_var = z * port_cov / sigma_p
+
+    if sigma_s_p == 0:
+        mc_liq = np.zeros_like(w)
+    else:
+        mc_liq = 0.5 * kappa * port_cov_s / sigma_s_p
+
+    var_contrib = w * mc_var
+    liq_contrib = w * mc_liq
+    total_contrib = var_contrib + liq_contrib
+
+    print(f"Вклад в LVaR (рыночный): {var_contrib}")
+    print(f"Вклад в LVaR (ликвидность): {liq_contrib}")
+    print(f"Суммарный вклад в LVaR: {total_contrib}")
+    print(f"Сумма вкладов = {total_contrib.sum()}, LVaR = {z * sigma_p + 0.5 * kappa * sigma_s_p}")
+
+    n = len(w)
+    x = np.arange(n)
+    width = 0.25
+
+    plt.figure(figsize=(10, 5))
+
+    plt.bar(x - width, var_contrib, width, label="VaR part")
+    plt.bar(x, liq_contrib, width, label="Liquidity part")
+    plt.bar(x + width, total_contrib, width, label="Total LVaR")
+
+    plt.xticks(x, tickers, rotation=45, ha="right")
+    plt.ylabel("Contribution to LVaR")
+    plt.title("LVaR Contributions by Asset")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("contribution.png", dpi=300, bbox_inches='tight')
+    plt.show()
+
+
+
+
 def main_cli():
     parser = argparse.ArgumentParser(
         description='Загрузка данных с MOEX и создание CSV/графиков',
@@ -1490,7 +1518,7 @@ def main_cli():
                     debug=args.debug,
                     show=args.show
                 )
-            
+
             weights_output_path = plot_portfolio_with_weights(
                 portfolio_df=portfolio_df,
                 symbols=successful_symbols,
