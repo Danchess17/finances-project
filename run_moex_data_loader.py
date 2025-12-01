@@ -1,4 +1,5 @@
-# run_moex_loader.py
+import sys
+
 from moex_data_loader import MoexDataLoader
 from datetime import datetime, timedelta
 import argparse
@@ -108,10 +109,8 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
             print("Нет символов для расчета весов")
         return None, None, None, None
     
-    # Убеждаемся, что Date в формате datetime
     portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
     
-    # 1. Рассчитываем спреды для каждой акции
     spreads = {}
     prices_dict = {}
     
@@ -264,59 +263,26 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
         return None, None, None, None
 
 
-def compute_lvar(weights, sigma, spreads_data, z=norm.ppf(0.95)):
-    """
-    Единый метод для расчета LVaR (Liquidity-adjusted Value at Risk)
-    
-    Формула LVaR:
-    LVaR = VaR + Стоимость_ликвидности
-    
-    где:
-    - VaR = z * sigma_p
-    - sigma_p = sqrt(w^T * sigma * w)  (стандартное отклонение портфеля)
-    - Стоимость_ликвидности = 0.5 * (w^T * spread_medians)
-    
-    Parameters:
-        weights (np.array): Вектор весов
-        sigma (np.array): Ковариационная матрица
-        spreads_data (dict или list): Если dict - {symbol: pd.Series спредов}, 
-                                     если list/np.array - уже медианы спредов (для обратной совместимости)
-        z (float): Квантиль нормального распределения (по умолчанию 95%)
-        
-    Returns:
-        dict: Словарь с метриками {'lvar', 'var', 'liquidity_cost', 'sigma_p'}
-    """
+def compute_lvar(weights, sigma, spreads_data, z=norm.ppf(0.95), kappa=1.0):
     weights = np.array(weights)
-    
-    # Обрабатываем spreads_data: если это dict со списком/Series спредов, вычисляем медианы
-    if isinstance(spreads_data, dict):
-        # Передан словарь {symbol: pd.Series спредов} - вычисляем медианы внутри compute_lvar
-        spread_medians = np.array([
-            float(spread_series.median()) if hasattr(spread_series, 'median') else float(spread_series)
-            for spread_series in spreads_data.values()
-        ])
-    else:
-        # Уже массив медиан (для обратной совместимости)
-        spread_medians = np.array(spreads_data)
-    
-    # Стандартное отклонение портфеля
+
+    assert isinstance(spreads_data, dict)
+
+    sigma_s = np.cov(np.vstack(list(spreads_data.values())))
+
     sigma_p = np.sqrt(weights @ sigma @ weights)
-    
-    # VaR (Value at Risk)
-    var = z * sigma_p
-    
-    # Стоимость ликвидности (используем медианы спредов)
-    liquidity_cost = 0.5 * (weights @ spread_medians)
-    
-    # LVaR (Liquidity-adjusted Value at Risk)
-    lvar = var + liquidity_cost
-    
+
+    liquidity_cost = 0.5 * kappa * np.sqrt(weights @ sigma_s @ weights)
+
+    lvar = z * sigma_p + liquidity_cost
+
     return {
         'lvar': lvar,
-        'var': var,
+        'var': (z * sigma_p),
         'liquidity_cost': liquidity_cost,
         'sigma_p': sigma_p
     }
+
 
 
 def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
@@ -931,7 +897,6 @@ def quick_load_single(symbol, years=3):
 
 
 def main_cli():
-    """Основная функция CLI"""
     parser = argparse.ArgumentParser(
         description='Загрузка данных с MOEX и создание CSV/графиков',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -966,8 +931,7 @@ def main_cli():
         """
     )
     
-    # Параметры дат (опциональные, с значениями по умолчанию)
-    parser.add_argument('--start', '--start-date', 
+    parser.add_argument('--start', '--start-date',
                        dest='start_date',
                        type=str,
                        default=None,
@@ -1028,21 +992,21 @@ def main_cli():
                        dest='debug',
                        action='store_true',
                        help='Показать подробную информацию о реальных датах загрузки для каждой акции')
-    
+
+    if len(sys.argv) == 1:
+            parser.print_help()
+
     args = parser.parse_args()
-    
-    # Устанавливаем значения по умолчанию для дат
-    # Если end не указан, используем вчерашний день
+
+
     if args.end_date is None:
         args.end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     
-    # Если start не указан, используем дату за последние 3 года от end_date
     if args.start_date is None:
         end_dt = datetime.strptime(args.end_date, '%Y-%m-%d')
         start_dt = end_dt - timedelta(days=3*365)
         args.start_date = start_dt.strftime('%Y-%m-%d')
     
-    # Валидация дат
     try:
         start_dt = datetime.strptime(args.start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(args.end_date, '%Y-%m-%d')
@@ -1052,7 +1016,6 @@ def main_cli():
     except ValueError as e:
         parser.error(f"Неверный формат даты. Используйте YYYY-MM-DD. Ошибка: {e}")
     
-    # Загружаем данные
     loader = MoexDataLoader(debug=args.debug)
     
     if args.debug:
@@ -1076,18 +1039,14 @@ def main_cli():
         print("Не удалось загрузить данные.")
         return
     
-    # Определяем путь к сохраненному CSV файлу (файл уже сохранен в load_portfolio_data)
     if args.csv_output:
-        # Если указан отдельный путь, сохраняем туда
         portfolio_df.to_csv(args.csv_output, index=False)
         csv_path = args.csv_output
     else:
-        # Используем путь, который был использован в load_portfolio_data
         portfolio_name = args.portfolio_name if args.portfolio_name else "_".join(args.symbols)
         csv_path = os.path.join("data", "russian_portfolio", 
                                f"{portfolio_name}_{args.start_date}_{args.end_date}_moex.csv")
     
-    # Показываем debug информацию, если запрошено
     if args.debug:
         print_debug_dates(
             portfolio_df=portfolio_df,
@@ -1097,11 +1056,9 @@ def main_cli():
         )
         print(f"\nCSV сохранен в: {csv_path}")
     
-    # В обычном режиме выводим только путь к CSV (без лишнего текста)
     if not args.debug:
         print(csv_path)
     
-    # Строим график, если нужно
     if args.plot:
         if args.debug:
             print("\n" + "=" * 60)
@@ -1121,7 +1078,6 @@ def main_cli():
         if not args.debug and plot_output_path:
             print(plot_output_path)
     
-    # Рассчитываем оптимальные веса, если запрошено
     if args.weights:
         if args.debug:
             print("\n" + "=" * 60)
@@ -1136,10 +1092,9 @@ def main_cli():
         )
         
         if weights_dict and sigma is not None and spread_array is not None:
-            # Проверяем оптимальность весов
             verification_results = verify_optimal_weights(
                 portfolio_df=portfolio_df,
-                symbols=tickers_ordered,  # Используем порядок из calculate_optimal_weights
+                symbols=tickers_ordered,
                 optimal_weights=weights_dict,
                 sigma=sigma,
                 spread_array=spread_array,
@@ -1148,7 +1103,7 @@ def main_cli():
             
             # Строим график сравнения LVaR
             if args.debug:
-                comparison_path = plot_lvar_comparison(
+                plot_lvar_comparison(
                     verification_results=verification_results,
                     symbols=successful_symbols,
                     output_path=None,
@@ -1156,7 +1111,6 @@ def main_cli():
                     show=args.show
                 )
             
-            # Строим график с весами
             weights_output_path = plot_portfolio_with_weights(
                 portfolio_df=portfolio_df,
                 symbols=successful_symbols,
@@ -1168,20 +1122,15 @@ def main_cli():
                 show=args.show
             )
             
-            # Выводим путь к графику (в обычном режиме)
             if not args.debug and weights_output_path:
                 print(weights_output_path)
             
-            # Выводим веса портфеля (всегда - и в debug, и без debug)
-            # В debug режиме математические выкладки уже были выведены в calculate_optimal_weights,
-            # поэтому здесь выводим только веса для единообразия
             if not args.debug:
                 # В обычном режиме выводим только веса
                 print("\nВеса портфеля:")
                 for symbol in successful_symbols:
                     if symbol in weights_dict:
                         print(f"{symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
-            # В debug режиме веса уже выведены в calculate_optimal_weights, не дублируем
         else:
             print("Не удалось рассчитать оптимальные веса")
     
@@ -1191,36 +1140,5 @@ def main_cli():
         print("=" * 60)
 
 
-# Примеры использования (для обратной совместимости)
 if __name__ == "__main__":
-    import sys
-    
-    # Если запущено без аргументов - показываем примеры старого использования
-    if len(sys.argv) == 1:
-        print("Использование CLI:")
-        print("# Самый простой вариант (последние 3 года до вчера):")
-        print("python run_moex_data_loader.py --portfolio SBER GAZP LKOH --plot")
-        print("\n# С указанием дат:")
-        print("python run_moex_data_loader.py --start 2023-01-01 --end 2024-01-01 --portfolio SBER GAZP LKOH --plot")
-        print("\n" + "=" * 60)
-        print("Запуск примеров старого формата:")
-        print("=" * 60)
-        
-        # Пример 1: Быстрая загрузка портфеля
-        print("\n=== ПРИМЕР 1: ПОРТФЕЛЬ ГОЛУБЫХ ФИШЕК ===")
-        blue_chips = ['SBER', 'GAZP', 'LKOH', 'ROSN', 'NVTK']
-        portfolio_df, symbols = quick_load_portfolio(blue_chips, years=2, portfolio_name="BLUE_CHIPS")
-        
-        print("\n=== ПРИМЕР 2: ПОРТФЕЛЬ ТЕХНОЛОГИЙ ===")
-        tech_stocks = ['YNDX', 'OZON', 'TCSG']
-        portfolio_df, symbols = quick_load_portfolio(tech_stocks, years=1, portfolio_name="TECH_STOCKS")
-        
-        print("\n=== ПРИМЕР 3: ОТДЕЛЬНАЯ АКЦИЯ ===")
-        df = quick_load_single('SBERP', years=1)
-        
-        # Показываем список файлов
-        loader = MoexDataLoader()
-        loader.list_saved_data()
-    else:
-        # Запускаем CLI
-        main_cli()
+    main_cli()
