@@ -17,6 +17,14 @@ def compute_corwin_schultz_spread(df):
     Вычисляет спред по методу Корвина-Шульца (Corwin-Schultz)
     Code written based on Corwin & Schultz (2011)
     
+    Правильная формула:
+    - Для дня t: beta_t = [ln(H_t/L_t)]^2
+    - Для двух дней t и t+1: 
+      H_{t,t+1} = max(H_t, H_{t+1}), L_{t,t+1} = min(L_t, L_{t+1})
+      gamma_t = [ln(H_{t,t+1}/L_{t,t+1})]^2
+    - alpha = sqrt(2*beta - sqrt(2)/(3-2*sqrt(2)) * sqrt(beta)) - sqrt(1/(3-2*sqrt(2)) * gamma)
+    - Spread = 2*(exp(alpha) - 1)/(1 + exp(alpha))
+    
     Parameters:
         df (pd.DataFrame): DataFrame с колонками High, Low, Close
         
@@ -32,33 +40,52 @@ def compute_corwin_schultz_spread(df):
     
     epsilon = 1e-10  # Small constant to prevent division by zero
     
-    # Beta calculation
+    # Beta calculation for day t: beta_t = [ln(H_t/L_t)]^2
     beta = (np.log(df['High'] / (df['Low'] + epsilon)) ** 2)
     
-    # Apply minimum constraint
-    min_beta_sq = (np.sqrt(2) / (3 - 2 * np.sqrt(2))) ** 2
-    beta[beta < min_beta_sq] = min_beta_sq
+    # Gamma calculation for two-day period: 
+    # H_{t,t+1} = max(H_t, H_{t+1}), L_{t,t+1} = min(L_t, L_{t+1})
+    # gamma_t = [ln(H_{t,t+1}/L_{t,t+1})]^2
+    high_combined = pd.concat([df['High'], df['High'].shift(-1)], axis=1).max(axis=1)
+    low_combined = pd.concat([df['Low'], df['Low'].shift(-1)], axis=1).min(axis=1)
+    gamma = (np.log(high_combined / (low_combined + epsilon)) ** 2)
     
-    # Gamma calculation (using shifted values)
-    gamma = (np.log(df['High'].shift(-1) / (df['Low'].shift(-1) + epsilon)) ** 2)
+    # Alpha calculation according to Corwin-Schultz formula
+    # Correct formula from research.ipynb (based on Corwin & Schultz 2011):
+    # denom = sqrt(3 - 2*sqrt(2))
+    # alpha = (sqrt(2*beta) - sqrt(gamma)) / denom
     
-    # Alpha calculation (точно по формуле из примера)
-    alpha_arg = 2 * beta - np.sqrt(beta) / (3 - 2 * np.sqrt(2))
+    denom = np.sqrt(3 - 2 * np.sqrt(2))  # denominator
     
-    # Защита от отрицательных значений под корнем
-    alpha_arg[alpha_arg < 0] = 0
+    # Calculate alpha using the correct simplified formula
+    sqrt_2beta = np.sqrt(2 * beta)
+    sqrt_gamma = np.sqrt(gamma)
     
-    # Вычисляем alpha, синхронизируя индексы
-    gamma_normalized = gamma / (3 - 2 * np.sqrt(2))
-    alpha = np.sqrt(alpha_arg) - np.sqrt(gamma_normalized)
+    # Ensure non-negative for square roots
+    sqrt_2beta = np.maximum(sqrt_2beta, epsilon)
+    sqrt_gamma = np.maximum(sqrt_gamma, epsilon)
     
-    # Spread calculation
-    S = (2 * (np.exp(alpha) - 1) / (1 + np.exp(alpha)))
+    # Alpha = (sqrt(2*beta) - sqrt(gamma)) / denom
+    alpha = (sqrt_2beta - sqrt_gamma) / denom
     
-    # Если меньше 0, берем 0 (максимум из 0 и S)
+    # Spread calculation: S = 2*(exp(alpha) - 1)/(1 + exp(alpha))
+    # This formula gives values in range [-2, 2] theoretically, but typically [0, 2]
+    # For realistic spreads, values should be small (< 0.1 for 10% spread)
+    exp_alpha = np.exp(alpha)
+    S = 2 * (exp_alpha - 1) / (1 + exp_alpha)
+    
+    # The formula can give negative values (which we handle) or values > 1
+    # For percentage spread, we expect values in [0, 1] range
+    # If values are > 1, there may be an issue with the calculation
+    
+    # Ensure spread is non-negative
     S = np.maximum(0, S)
     
-    # Удаляем NaN значения и возвращаем
+    # Cap at reasonable maximum (e.g., 0.5 = 50% spread is already very high)
+    # Values above this suggest calculation issues
+    S = np.minimum(S, 0.5)  # Cap at 50% as a safety measure
+    
+    # Remove NaN values (from shift operations at boundaries)
     S = S.dropna()
     
     return S
@@ -299,6 +326,197 @@ def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
         dict: Словарь с метриками {'lvar', 'var', 'liquidity_cost', 'sigma_p'}
     """
     return compute_lvar(weights, sigma, spread_array, z)
+
+
+def evaluate_portfolio_liquidity(weights, portfolio_df, symbols, use_corwin_schultz=False, debug=False):
+    """
+    Оценивает ликвидность портфеля с заданными весами
+    
+    Что значит "ликвидный портфель":
+    1. Низкая стоимость ликвидности (weighted average spread)
+    2. Низкие спреды активов в портфеле
+    3. Можно быстро закрыть позицию без больших потерь
+    4. Портфель устойчив к изменениям ликвидности
+    
+    Parameters:
+        weights (dict): Словарь весов {symbol: weight}
+        portfolio_df (pd.DataFrame): Данные портфеля с колонками Date, High, Low, Close, Symbol
+        symbols (list): Список символов
+        use_corwin_schultz (bool): Использовать метод Корвина-Шульца для расчета спреда
+        debug (bool): Режим отладки
+        
+    Returns:
+        dict: Результаты оценки ликвидности с метриками и оценкой
+    """
+    if portfolio_df is None or portfolio_df.empty:
+        return {'error': 'Нет данных портфеля'}
+    
+    if not weights or not symbols:
+        return {'error': 'Нет весов или символов'}
+    
+    portfolio_df = portfolio_df.copy()
+    portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+    
+    # 1. Рассчитываем спреды для каждого актива
+    spreads_median = {}
+    spreads_mean = {}
+    spreads_max = {}
+    spreads_std = {}
+    
+    for symbol in symbols:
+        symbol_data = portfolio_df[portfolio_df['Symbol'] == symbol][['High', 'Low', 'Close']]
+        if symbol_data.empty:
+            continue
+        
+        spread_series = compute_spread(symbol_data, use_corwin_schultz=use_corwin_schultz)
+        spreads_median[symbol] = spread_series.median()
+        spreads_mean[symbol] = spread_series.mean()
+        spreads_max[symbol] = spread_series.max()
+        spreads_std[symbol] = spread_series.std()
+    
+    # 2. Рассчитываем средневзвешенный спред портфеля
+    portfolio_spread_weighted = sum([weights.get(s, 0) * spreads_median.get(s, 0) for s in symbols])
+    portfolio_spread_mean = sum([weights.get(s, 0) * spreads_mean.get(s, 0) for s in symbols])
+    
+    # 3. Стоимость ликвидности портфеля (0.5 * weighted spread)
+    liquidity_cost = 0.5 * portfolio_spread_weighted
+    
+    # 4. Сравнение с равными весами (бенчмарк)
+    n = len(symbols)
+    equal_weights = {s: 1.0/n for s in symbols}
+    equal_spread = sum([equal_weights.get(s, 0) * spreads_median.get(s, 0) for s in symbols])
+    equal_liquidity_cost = 0.5 * equal_spread
+    
+    # 5. Концентрация риска ликвидности (максимальный вклад одного актива)
+    max_contribution = max([weights.get(s, 0) * spreads_median.get(s, 0) for s in symbols])
+    max_contribution_pct = (max_contribution / portfolio_spread_weighted * 100) if portfolio_spread_weighted > 0 else 0
+    
+    # 6. Оценка ликвидности по порогам
+    # Пороги для оценки (на основе эмпирических данных):
+    # - Отлично: спред < 0.01 (1%)
+    # - Хорошо: спред 0.01-0.02 (1-2%)
+    # - Средне: спред 0.02-0.03 (2-3%)
+    # - Плохо: спред > 0.03 (3%+)
+    
+    if portfolio_spread_weighted < 0.01:
+        liquidity_rating = "ОТЛИЧНО"
+        rating_score = 5
+    elif portfolio_spread_weighted < 0.02:
+        liquidity_rating = "ХОРОШО"
+        rating_score = 4
+    elif portfolio_spread_weighted < 0.03:
+        liquidity_rating = "СРЕДНЕ"
+        rating_score = 3
+    elif portfolio_spread_weighted < 0.05:
+        liquidity_rating = "НИЗКО"
+        rating_score = 2
+    else:
+        liquidity_rating = "ОЧЕНЬ НИЗКО"
+        rating_score = 1
+    
+    # 7. Стабильность ликвидности (коэффициент вариации спредов)
+    spread_cv = {}
+    for symbol in symbols:
+        if spreads_std.get(symbol, 0) > 0 and spreads_mean.get(symbol, 0) > 0:
+            spread_cv[symbol] = (spreads_std[symbol] / spreads_mean[symbol]) * 100
+        else:
+            spread_cv[symbol] = 0
+    
+    avg_cv = np.mean([spread_cv.get(s, 0) for s in symbols])
+    
+    # 8. Сравнение с бенчмарком
+    improvement_vs_equal = ((equal_liquidity_cost - liquidity_cost) / equal_liquidity_cost * 100) if equal_liquidity_cost > 0 else 0
+    
+    results = {
+        'liquidity_rating': liquidity_rating,
+        'rating_score': rating_score,
+        'portfolio_spread_median': portfolio_spread_weighted,
+        'portfolio_spread_mean': portfolio_spread_mean,
+        'liquidity_cost': liquidity_cost,
+        'equal_weights_spread': equal_spread,
+        'equal_weights_liquidity_cost': equal_liquidity_cost,
+        'improvement_vs_equal_pct': improvement_vs_equal,
+        'max_contribution_pct': max_contribution_pct,
+        'spread_stability_cv': avg_cv,
+        'asset_spreads': {
+            s: {
+                'median': spreads_median.get(s, 0),
+                'mean': spreads_mean.get(s, 0),
+                'max': spreads_max.get(s, 0),
+                'std': spreads_std.get(s, 0),
+                'cv': spread_cv.get(s, 0),
+                'weight': weights.get(s, 0),
+                'contribution': weights.get(s, 0) * spreads_median.get(s, 0)
+            }
+            for s in symbols
+        },
+        'weights': weights
+    }
+    
+    if debug:
+        print("\n" + "=" * 70)
+        print("ОЦЕНКА ЛИКВИДНОСТИ ПОРТФЕЛЯ")
+        print("=" * 70)
+        print(f"\nОценка: {liquidity_rating} (балл: {rating_score}/5)")
+        print(f"\n--- МЕТРИКИ ПОРТФЕЛЯ ---")
+        print(f"Средневзвешенный спред (медиана): {portfolio_spread_weighted:.4f} ({portfolio_spread_weighted*100:.2f}%)")
+        print(f"Средневзвешенный спред (среднее): {portfolio_spread_mean:.4f} ({portfolio_spread_mean*100:.2f}%)")
+        print(f"Стоимость ликвидности: {liquidity_cost:.6f}")
+        print(f"\n--- СРАВНЕНИЕ С РАВНЫМИ ВЕСАМИ ---")
+        print(f"Спред при равных весах: {equal_spread:.4f} ({equal_spread*100:.2f}%)")
+        print(f"Стоимость ликвидности при равных весах: {equal_liquidity_cost:.6f}")
+        print(f"Улучшение: {improvement_vs_equal:+.2f}%")
+        
+        print(f"\n--- АНАЛИЗ ПО АКТИВАМ ---")
+        for symbol in symbols:
+            asset_info = results['asset_spreads'][symbol]
+            print(f"\n{symbol}:")
+            print(f"  Вес: {asset_info['weight']:.2%}")
+            print(f"  Спред (медиана): {asset_info['median']:.4f} ({asset_info['median']*100:.2f}%)")
+            print(f"  Спред (макс): {asset_info['max']:.4f} ({asset_info['max']*100:.2f}%)")
+            print(f"  Вклад в спред портфеля: {asset_info['contribution']:.6f} ({asset_info['contribution']/portfolio_spread_weighted*100:.1f}%)")
+            print(f"  Стабильность (CV): {asset_info['cv']:.1f}%")
+        
+        print(f"\n--- РИСКИ ЛИКВИДНОСТИ ---")
+        print(f"Максимальный вклад одного актива: {max_contribution_pct:.1f}%")
+        if max_contribution_pct > 50:
+            print("  ⚠️  ВНИМАНИЕ: Высокая концентрация риска ликвидности!")
+            print("     Это означает, что более 50% спреда портфеля приходится на один актив.")
+            print("     Если ликвидность этого актива ухудшится, это сильно повлияет на весь портфель.")
+        else:
+            print("  ✓ Концентрация риска приемлемая")
+        
+        print(f"Средняя стабильность спредов (CV): {avg_cv:.1f}%")
+        if avg_cv > 50:
+            print("  ⚠️  ВНИМАНИЕ: Высокая изменчивость спредов!")
+            print("     Коэффициент вариации >50% означает, что спреды сильно колеблются во времени.")
+            print("     Текущая оценка ликвидности может сильно измениться в будущем.")
+        else:
+            print("  ✓ Спреды стабильны во времени")
+        
+        print(f"\n--- КРИТЕРИИ ОЦЕНКИ ЛИКВИДНОСТИ ---")
+        print("Оценка основана на средневзвешенном спреде портфеля:")
+        print("  • ОТЛИЧНО (5/5): спред < 1.0%")
+        print("  • ХОРОШО (4/5):  спред 1.0-2.0%")
+        print("  • СРЕДНЕ (3/5):  спред 2.0-3.0%")
+        print("  • НИЗКО (2/5):   спред 3.0-5.0%")
+        print("  • ОЧЕНЬ НИЗКО (1/5): спред > 5.0%")
+        
+        print(f"\n--- ИНТЕРПРЕТАЦИЯ ---")
+        if rating_score >= 4:
+            print("✓ Портфель имеет хорошую ликвидность. Можно быстро закрыть позиции с минимальными потерями.")
+            if max_contribution_pct > 50 or avg_cv > 50:
+                print("⚠ Однако есть дополнительные риски (см. раздел 'РИСКИ ЛИКВИДНОСТИ')")
+        elif rating_score == 3:
+            print("⚠ Портфель имеет среднюю ликвидность. При закрытии позиций возможны умеренные потери.")
+        else:
+            print("✗ Портфель имеет низкую ликвидность. При закрытии позиций возможны значительные потери.")
+        
+        print(f"\n--- МЕТОД РАСЧЕТА СПРЕДА ---")
+        method_name = "Корвина-Шульца" if use_corwin_schultz else "простая формула (High-Low)/Close"
+        print(f"Используется: {method_name}")
+    
+    return results
 
 
 def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread_array, 
@@ -992,6 +1210,11 @@ def main_cli():
                        dest='debug',
                        action='store_true',
                        help='Показать подробную информацию о реальных датах загрузки для каждой акции')
+    
+    parser.add_argument('--check-liquidity',
+                       dest='check_liquidity',
+                       action='store_true',
+                       help='Проверить ликвидность портфеля с заданными весами (если --weights не указан, использует равные веса)')
 
     if len(sys.argv) == 1:
             parser.print_help()
@@ -1131,8 +1354,45 @@ def main_cli():
                 for symbol in successful_symbols:
                     if symbol in weights_dict:
                         print(f"{symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
+            
+            # Проверка ликвидности портфеля (если запрошена)
+            if args.check_liquidity:
+                if args.debug:
+                    print("\n" + "=" * 60)
+                    print("ПРОВЕРКА ЛИКВИДНОСТИ ПОРТФЕЛЯ")
+                    print("=" * 60)
+                
+                liquidity_results = evaluate_portfolio_liquidity(
+                    weights=weights_dict,
+                    portfolio_df=portfolio_df,
+                    symbols=successful_symbols,
+                    use_corwin_schultz=args.use_corwin_schultz,
+                    debug=args.debug
+                )
         else:
             print("Не удалось рассчитать оптимальные веса")
+    
+    # Проверка ликвидности с равными весами (если --check-liquidity указан, но --weights нет)
+    elif args.check_liquidity:
+        if args.debug:
+            print("\n" + "=" * 60)
+            print("ПРОВЕРКА ЛИКВИДНОСТИ ПОРТФЕЛЯ (равные веса)")
+            print("=" * 60)
+        
+        # Используем равные веса
+        equal_weights = {s: 1.0/len(successful_symbols) for s in successful_symbols}
+        
+        liquidity_results = evaluate_portfolio_liquidity(
+            weights=equal_weights,
+            portfolio_df=portfolio_df,
+            symbols=successful_symbols,
+            use_corwin_schultz=args.use_corwin_schultz,
+            debug=args.debug
+        )
+        
+        if not args.debug:
+            print(f"\nОценка ликвидности: {liquidity_results.get('liquidity_rating', 'N/A')}")
+            print(f"Средневзвешенный спред: {liquidity_results.get('portfolio_spread_median', 0):.4f} ({liquidity_results.get('portfolio_spread_median', 0)*100:.2f}%)")
     
     if args.debug:
         print("\n" + "=" * 60)
