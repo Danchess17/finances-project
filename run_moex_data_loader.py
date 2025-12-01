@@ -11,21 +11,79 @@ from scipy.stats import norm
 from scipy.optimize import minimize
 
 
-def compute_spread(df):
+def compute_corwin_schultz_spread(df):
     """
-    Вычисляет спред как медиану (High - Low) / Close
+    Вычисляет спред по методу Корвина-Шульца (Corwin-Schultz)
+    Code written based on Corwin & Schultz (2011)
     
     Parameters:
         df (pd.DataFrame): DataFrame с колонками High, Low, Close
         
     Returns:
-        float: Медианный спред
+        pd.Series: Массив значений спреда для каждого дня
     """
-    spread = (df["High"] - df["Low"]) / df["Close"]
-    return spread.median()
+    # Check for null or infinite values
+    if df['High'].isnull().any() or df['Low'].isnull().any():
+        return pd.Series([0.0] * len(df), index=df.index)
+    
+    if np.isinf(df['High']).any() or np.isinf(df['Low']).any():
+        return pd.Series([0.0] * len(df), index=df.index)
+    
+    epsilon = 1e-10  # Small constant to prevent division by zero
+    
+    # Beta calculation
+    beta = (np.log(df['High'] / (df['Low'] + epsilon)) ** 2)
+    
+    # Apply minimum constraint
+    min_beta_sq = (np.sqrt(2) / (3 - 2 * np.sqrt(2))) ** 2
+    beta[beta < min_beta_sq] = min_beta_sq
+    
+    # Gamma calculation (using shifted values)
+    gamma = (np.log(df['High'].shift(-1) / (df['Low'].shift(-1) + epsilon)) ** 2)
+    
+    # Alpha calculation (точно по формуле из примера)
+    alpha_arg = 2 * beta - np.sqrt(beta) / (3 - 2 * np.sqrt(2))
+    
+    # Защита от отрицательных значений под корнем
+    alpha_arg[alpha_arg < 0] = 0
+    
+    # Вычисляем alpha, синхронизируя индексы
+    gamma_normalized = gamma / (3 - 2 * np.sqrt(2))
+    alpha = np.sqrt(alpha_arg) - np.sqrt(gamma_normalized)
+    
+    # Spread calculation
+    S = (2 * (np.exp(alpha) - 1) / (1 + np.exp(alpha)))
+    
+    # Если меньше 0, берем 0 (максимум из 0 и S)
+    S = np.maximum(0, S)
+    
+    # Удаляем NaN значения и возвращаем
+    S = S.dropna()
+    
+    return S
 
 
-def calculate_optimal_weights(portfolio_df, symbols, debug=False):
+def compute_spread(df, use_corwin_schultz=False):
+    """
+    Вычисляет спред для каждого дня
+    
+    Parameters:
+        df (pd.DataFrame): DataFrame с колонками High, Low, Close
+        use_corwin_schultz (bool): Если True - использует метод Корвина-Шульца,
+                                  если False - использует простую формулу (High-Low)/Close
+        
+    Returns:
+        pd.Series: Массив значений спреда для каждого дня
+    """
+    if use_corwin_schultz:
+        return compute_corwin_schultz_spread(df)
+    else:
+        # Простая формула: (High - Low) / Close
+        spread = (df["High"] - df["Low"]) / df["Close"]
+        return spread
+
+
+def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_schultz=False):
     """
     Рассчитывает оптимальные веса для минимизации LVaR (Liquidity-adjusted VaR)
     Использует методику из research.ipynb
@@ -34,6 +92,8 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         portfolio_df (pd.DataFrame): Данные портфеля с колонками Date, High, Low, Close, Symbol
         symbols (list): Список символов
         debug (bool): Режим отладки
+        use_corwin_schultz (bool): Если True - использует метод Корвина-Шульца для расчета спреда,
+                                  если False - использует простую формулу (High-Low)/Close
         
     Returns:
         dict: Словарь {symbol: weight}
@@ -72,16 +132,17 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
                 print(f"Нет данных для {symbol} после удаления дубликатов")
             continue
         
-        # Рассчитываем спред
-        spread = compute_spread(stock_data[['High', 'Low', 'Close']])
-        spreads[symbol] = spread
+        # Рассчитываем спред (возвращает массив спредов)
+        spread_array = compute_spread(stock_data[['High', 'Low', 'Close']], use_corwin_schultz=use_corwin_schultz)
+        spreads[symbol] = spread_array  # Сохраняем весь массив, медиана будет вычислена в compute_lvar
         
         # Сохраняем цены закрытия (устанавливаем Date как индекс для объединения)
         stock_data_indexed = stock_data.set_index('Date')
         prices_dict[symbol] = stock_data_indexed['Close']
         
         if debug:
-            print(f"{symbol}: спред = {spread:.6f}")
+            spread_median = spread_array.median()
+            print(f"{symbol}: спред = {spread_median:.6f}")
     
     if not spreads:
         if debug:
@@ -117,15 +178,16 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     tickers = returns.columns.tolist()
     n = len(tickers)
     
-    # 5. Создаем массив спредов в том же порядке, что и tickers
-    spread_array = np.array([spreads[t] for t in tickers])
+    # 5. Создаем словарь массивов спредов в том же порядке, что и tickers (медиана будет вычислена в compute_lvar)
+    spreads_dict = {t: spreads[t] for t in tickers}
     
     if debug:
         print(f"\nКовариационная матрица ({n}x{n}):")
         print(sigma)
-        print(f"\nСпреды:")
-        for t, s in zip(tickers, spread_array):
-            print(f"{t}: {s:.6f}")
+        print(f"\nСпреды (медиана):")
+        for t in tickers:
+            spread_median = spreads[t].median()
+            print(f"{t}: {spread_median:.6f}")
         
         # Выводим формулу оптимизации
         print("\n" + "=" * 70)
@@ -147,15 +209,13 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         print("• Все веса ≥ 0 (wᵢ ≥ 0)")
         print("=" * 70)
     
-    # 6. Функция для минимизации LVaR
+    # 6. Функция для минимизации LVaR (использует единый метод compute_lvar)
     z = norm.ppf(0.95)  # 95% доверительный уровень
     
-    def portfolio_lvar(w, sigma, spread_array, z):
-        """Функция для расчета LVaR портфеля"""
-        sigma_p = np.sqrt(w @ sigma @ w)
-        var = z * sigma_p
-        liquidity_cost = 0.5 * (w @ spread_array)
-        return var + liquidity_cost
+    def portfolio_lvar(w, sigma, spreads_dict, z):
+        """Функция для расчета LVaR портфеля (для оптимизации)"""
+        result = compute_lvar(w, sigma, spreads_dict, z)
+        return result['lvar']
     
     # 7. Оптимизация весов
     w0 = np.ones(n) / n  # Начальные веса (равномерное распределение)
@@ -166,7 +226,7 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         opt_lvar = minimize(
             portfolio_lvar,
             w0,
-            args=(sigma, spread_array, z),
+            args=(sigma, spreads_dict, z),
             method="SLSQP",
             bounds=bounds,
             constraints=[cons]
@@ -183,22 +243,21 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
         weights_dict = {ticker: weight for ticker, weight in zip(tickers, w_lvar)}
         
         if debug:
-            # Показываем итоговые метрики
-            final_w = np.array([w_lvar])
-            final_sigma_p = np.sqrt(final_w @ sigma @ final_w.T)[0, 0]
-            final_var = z * final_sigma_p
-            final_liq_cost = 0.5 * (final_w @ spread_array)[0]
-            final_lvar = final_var + final_liq_cost
+            # Показываем итоговые метрики (используем единый метод compute_lvar)
+            final_metrics = compute_lvar(w_lvar, sigma, spreads_dict, z)
             
             print(f"\n Оптимальные веса (минимизация LVaR):")
             for t, w in weights_dict.items():
                 print(f"{t}: {w:.4f} ({w*100:.2f}%)")
             
             print(f"\n Метрики портфеля:")
-            print(f"Стандартное отклонение: {final_sigma_p:.6f}")
-            print(f"VaR (95%): {final_var:.6f}")
-            print(f"Стоимость ликвидности: {final_liq_cost:.6f}")
-            print(f"LVaR: {final_lvar:.6f}")
+            print(f"Стандартное отклонение: {final_metrics['sigma_p']:.6f}")
+            print(f"VaR (95%): {final_metrics['var']:.6f}")
+            print(f"Стоимость ликвидности: {final_metrics['liquidity_cost']:.6f}")
+            print(f"LVaR: {final_metrics['lvar']:.6f}")
+        
+        # Для обратной совместимости создаем массив медиан спредов
+        spread_array = np.array([spreads_dict[t].median() for t in tickers])
         
         return weights_dict, sigma, spread_array, tickers
         
@@ -211,9 +270,9 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False):
     return None, None, None, None
 
 
-def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
+def compute_lvar(weights, sigma, spreads_data, z=norm.ppf(0.95)):
     """
-    Рассчитывает LVaR для заданных весов
+    Единый метод для расчета LVaR (Liquidity-adjusted Value at Risk)
     
     Формула LVaR:
     LVaR = VaR + Стоимость_ликвидности
@@ -221,12 +280,13 @@ def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
     где:
     - VaR = z * sigma_p
     - sigma_p = sqrt(w^T * sigma * w)  (стандартное отклонение портфеля)
-    - Стоимость_ликвидности = 0.5 * (w^T * spread_array)
+    - Стоимость_ликвидности = 0.5 * (w^T * spread_medians)
     
     Parameters:
         weights (np.array): Вектор весов
         sigma (np.array): Ковариационная матрица
-        spread_array (np.array): Массив спредов
+        spreads_data (dict или list): Если dict - {symbol: pd.Series спредов}, 
+                                     если list/np.array - уже медианы спредов (для обратной совместимости)
         z (float): Квантиль нормального распределения (по умолчанию 95%)
         
     Returns:
@@ -234,16 +294,27 @@ def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
     """
     weights = np.array(weights)
     
+    # Обрабатываем spreads_data: если это dict со списком/Series спредов, вычисляем медианы
+    if isinstance(spreads_data, dict):
+        # Передан словарь {symbol: pd.Series спредов} - вычисляем медианы внутри compute_lvar
+        spread_medians = np.array([
+            float(spread_series.median()) if hasattr(spread_series, 'median') else float(spread_series)
+            for spread_series in spreads_data.values()
+        ])
+    else:
+        # Уже массив медиан (для обратной совместимости)
+        spread_medians = np.array(spreads_data)
+    
     # Стандартное отклонение портфеля
     sigma_p = np.sqrt(weights @ sigma @ weights)
     
     # VaR (Value at Risk)
     var = z * sigma_p
     
-    # Стоимость ликвидности
-    liquidity_cost = 0.5 * (weights @ spread_array)
+    # Стоимость ликвидности (используем медианы спредов)
+    liquidity_cost = 0.5 * (weights @ spread_medians)
     
-    # LVaR (Liquidity-adjusted VaR)
+    # LVaR (Liquidity-adjusted Value at Risk)
     lvar = var + liquidity_cost
     
     return {
@@ -252,6 +323,22 @@ def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
         'liquidity_cost': liquidity_cost,
         'sigma_p': sigma_p
     }
+
+
+def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
+    """
+    Рассчитывает LVaR для заданных весов (обертка над compute_lvar для обратной совместимости)
+    
+    Parameters:
+        weights (np.array): Вектор весов
+        sigma (np.array): Ковариационная матрица
+        spread_array (np.array): Массив спредов (один спред на актив)
+        z (float): Квантиль нормального распределения (по умолчанию 95%)
+        
+    Returns:
+        dict: Словарь с метриками {'lvar', 'var', 'liquidity_cost', 'sigma_p'}
+    """
+    return compute_lvar(weights, sigma, spread_array, z)
 
 
 def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread_array, 
@@ -877,6 +964,9 @@ def main_cli():
   # Расчет оптимальных весов портфеля (минимизация LVaR)
   python run_moex_data_loader.py --portfolio SBER GAZP LKOH --weights
   
+  # Расчет весов с методом Корвина-Шульца для спреда
+  python run_moex_data_loader.py --portfolio SBER GAZP LKOH --weights --corwin-schultz
+  
   # Расчет весов с показом графика
   python run_moex_data_loader.py --portfolio SBER GAZP LKOH --weights --show --debug
         """
@@ -917,6 +1007,11 @@ def main_cli():
                        dest='weights',
                        action='store_true',
                        help='Рассчитать оптимальные веса портфеля (минимизация LVaR) и показать график с весами')
+    
+    parser.add_argument('--corwin-schultz',
+                       dest='use_corwin_schultz',
+                       action='store_true',
+                       help='Использовать метод Корвина-Шульца для расчета спреда (по умолчанию: простая формула)')
     
     parser.add_argument('--plot-output',
                        dest='plot_output',
@@ -1042,7 +1137,8 @@ def main_cli():
         weights_dict, sigma, spread_array, tickers_ordered = calculate_optimal_weights(
             portfolio_df=portfolio_df,
             symbols=successful_symbols,
-            debug=args.debug
+            debug=args.debug,
+            use_corwin_schultz=args.use_corwin_schultz
         )
         
         if weights_dict and sigma is not None and spread_array is not None:
