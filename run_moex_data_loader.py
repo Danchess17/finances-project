@@ -256,18 +256,12 @@ def calculate_optimal_weights(portfolio_df, symbols, debug=False, use_corwin_sch
             print(f"Стоимость ликвидности: {final_metrics['liquidity_cost']:.6f}")
             print(f"LVaR: {final_metrics['lvar']:.6f}")
         
-        # Для обратной совместимости создаем массив медиан спредов
-        spread_array = np.array([spreads_dict[t].median() for t in tickers])
-        
-        return weights_dict, sigma, spread_array, tickers
+        return weights_dict, sigma, spreads_dict, tickers
         
     except Exception as e:
         if debug:
             print(f"Ошибка при оптимизации весов: {e}")
         return None, None, None, None
-    
-    # Если дошли сюда без возврата - возвращаем None
-    return None, None, None, None
 
 
 def compute_lvar(weights, sigma, spreads_data, z=norm.ppf(0.95)):
