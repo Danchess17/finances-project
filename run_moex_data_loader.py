@@ -301,6 +301,375 @@ def calculate_lvar_for_weights(weights, sigma, spread_array, z=norm.ppf(0.95)):
     return compute_lvar(weights, sigma, spread_array, z)
 
 
+def calculate_portfolio_return_series(portfolio_df, weights, symbols):
+    """
+    Рассчитывает накопленную доходность портфеля по дням
+    
+    Доходность рассчитывается как скалярное произведение весов на цены,
+    где цена = (High + Low) / 2 для каждого дня
+    
+    Parameters:
+        portfolio_df (pd.DataFrame): Данные портфеля с колонками Date, High, Low, Symbol
+        weights (dict): Словарь весов {symbol: weight}
+        symbols (list): Список символов
+        
+    Returns:
+        pd.DataFrame: DataFrame с колонками Date и Portfolio_Value (накопленная доходность)
+    """
+    portfolio_df = portfolio_df.copy()
+    portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+    
+    # Создаем DataFrame с ценами для каждого актива (среднее между High и Low)
+    prices_dict = {}
+    dates_set = set()
+    
+    for symbol in symbols:
+        symbol_data = portfolio_df[portfolio_df['Symbol'] == symbol].copy()
+        symbol_data = symbol_data.sort_values('Date')
+        symbol_data = symbol_data[~symbol_data['Date'].duplicated(keep='last')]
+        
+        if symbol_data.empty:
+            continue
+        
+        # Рассчитываем среднюю цену (High + Low) / 2
+        symbol_data['AvgPrice'] = (symbol_data['High'] + symbol_data['Low']) / 2
+        symbol_data_indexed = symbol_data.set_index('Date')
+        prices_dict[symbol] = symbol_data_indexed['AvgPrice']
+        dates_set.update(symbol_data_indexed.index)
+    
+    if not prices_dict:
+        return pd.DataFrame(columns=['Date', 'Portfolio_Value'])
+    
+    # Создаем общий DataFrame с ценами
+    prices_df = pd.DataFrame(prices_dict)
+    prices_df = prices_df.sort_index()
+    
+    # Заполняем пропуски методом forward fill (берем последнюю известную цену)
+    prices_df = prices_df.ffill()
+    
+    # Рассчитываем стоимость портфеля для каждого дня
+    # portfolio_value = sum(weight_i * price_i)
+    portfolio_values = []
+    for date in prices_df.index:
+        portfolio_value = 0
+        for symbol in symbols:
+            if symbol in prices_df.columns and symbol in weights:
+                price = prices_df.loc[date, symbol]
+                if pd.notna(price):
+                    portfolio_value += weights[symbol] * price
+        portfolio_values.append(portfolio_value)
+    
+    # Создаем результирующий DataFrame
+    result_df = pd.DataFrame({
+        'Date': prices_df.index,
+        'Portfolio_Value': portfolio_values
+    })
+    
+    # Нормализуем к начальному значению (первый день = 1.0)
+    if len(result_df) > 0 and result_df.iloc[0]['Portfolio_Value'] > 0:
+        initial_value = result_df.iloc[0]['Portfolio_Value']
+        result_df['Portfolio_Value'] = result_df['Portfolio_Value'] / initial_value
+    
+    return result_df
+
+
+def plot_portfolio_returns_train_test(
+    portfolio_df, 
+    optimal_weights, 
+    symbols, 
+    train_ratio=0.7,
+    output_path=None,
+    debug=False,
+    show=False
+):
+    """
+    Строит график накопленной доходности портфеля для train и test периодов
+    
+    Показывает:
+    - Оптимальные веса (жирная линия)
+    - Равные веса (тусклая линия)
+    - Несколько случайных наборов весов (тусклые линии)
+    
+    Parameters:
+        portfolio_df (pd.DataFrame): Данные портфеля
+        optimal_weights (dict): Оптимальные веса {symbol: weight}
+        symbols (list): Список символов
+        train_ratio (float): Доля данных для train (по умолчанию 0.7)
+        output_path (str): Путь для сохранения графика
+        debug (bool): Режим отладки
+        show (bool): Показать график в окне
+    """
+    portfolio_df = portfolio_df.copy()
+    portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+    
+    # Определяем даты для train/test
+    dates = sorted(portfolio_df['Date'].unique())
+    n_dates = len(dates)
+    train_size = int(n_dates * train_ratio)
+    
+    train_dates = dates[:train_size]
+    test_dates = dates[train_size:]
+    
+    train_start_date = train_dates[0]
+    train_end_date = train_dates[-1]
+    test_start_date = test_dates[0] if test_dates else None
+    test_end_date = test_dates[-1] if test_dates else None
+    
+    if debug:
+        print(f"\nРазделение на train/test:")
+        print(f"Train период: {train_start_date.date()} - {train_end_date.date()} ({len(train_dates)} дней)")
+        if test_start_date:
+            print(f"Test период: {test_start_date.date()} - {test_end_date.date()} ({len(test_dates)} дней)")
+    
+    # Разделяем данные на train/test
+    train_df = portfolio_df[portfolio_df['Date'].isin(train_dates)]
+    test_df = portfolio_df[portfolio_df['Date'].isin(test_dates)] if test_dates else pd.DataFrame()
+    
+    # Рассчитываем доходность для оптимальных весов
+    optimal_train_returns = calculate_portfolio_return_series(train_df, optimal_weights, symbols)
+    optimal_test_returns = calculate_portfolio_return_series(test_df, optimal_weights, symbols) if not test_df.empty else pd.DataFrame()
+    
+    # Создаем различные варианты весов для сравнения
+    n = len(symbols)
+    alternative_weights_list = []
+    alternative_labels = []
+    
+    # 1. Равные веса
+    equal_weights = {s: 1.0/n for s in symbols}
+    alternative_weights_list.append(equal_weights)
+    alternative_labels.append('Равные веса')
+    
+    # 2. Портфели из одной акции (по 100% в каждую)
+    for symbol in symbols:
+        single_asset_weights = {s: 1.0 if s == symbol else 0.0 for s in symbols}
+        alternative_weights_list.append(single_asset_weights)
+        alternative_labels.append(f'100% {symbol}')
+    
+    # 3. Много случайных наборов весов (около 1000)
+    np.random.seed(42)  # Для воспроизводимости
+    num_random_strategies = 1000
+    if debug:
+        print(f"Генерация {num_random_strategies} случайных стратегий...")
+    
+    # Используем разные распределения Dirichlet для разнообразия
+    for i in range(num_random_strategies):
+        # Чередуем разные параметры Dirichlet для разнообразия
+        if i % 100 == 0:
+            alpha_params = np.ones(n)  # Равномерное распределение
+        elif i % 100 < 30:
+            alpha_params = np.random.exponential(1.0, n) + 0.5  # Разные концентрации
+        elif i % 100 < 60:
+            alpha_params = np.random.gamma(2.0, 1.0, n)  # Еще один тип распределения
+        else:
+            alpha_params = np.random.uniform(0.5, 3.0, n)  # Случайные параметры
+        
+        random_w = np.random.dirichlet(alpha_params, size=1)[0]
+        random_weights = {symbols[j]: random_w[j] for j in range(n)}
+        alternative_weights_list.append(random_weights)
+        alternative_labels.append(f'Случайные #{i+1}')
+    
+    # 4. Веса с перекосом в разные стороны (для каждого актива)
+    if n >= 2:
+        for symbol_idx, symbol in enumerate(symbols):
+            # Различные уровни перекоса: 60%, 70%, 80%, 90%
+            for skew_level in [0.6, 0.7, 0.8, 0.9]:
+                skewed_weights = {symbol: skew_level}
+                remaining_weight = (1.0 - skew_level) / (n - 1)
+                for i in range(n):
+                    if symbols[i] != symbol:
+                        skewed_weights[symbols[i]] = remaining_weight
+                alternative_weights_list.append(skewed_weights)
+                alternative_labels.append(f'{int(skew_level*100)}% {symbol}')
+    
+    # 5. Веса с концентрацией на двух активах (для каждой пары)
+    if n >= 2:
+        for i in range(n):
+            for j in range(i + 1, n):
+                for split_ratio in [0.5, 0.6, 0.7, 0.8]:  # Разные соотношения между двумя активами
+                    two_asset_weights = {symbols[k]: 0.0 for k in range(n)}
+                    two_asset_weights[symbols[i]] = split_ratio
+                    two_asset_weights[symbols[j]] = 1.0 - split_ratio
+                    alternative_weights_list.append(two_asset_weights)
+                    alternative_labels.append(f'{int(split_ratio*100)}% {symbols[i]}, {int((1-split_ratio)*100)}% {symbols[j]}')
+    
+    # 6. Веса с концентрацией на трех активах (если есть хотя бы 3)
+    if n >= 3:
+        # Берем несколько комбинаций из трех активов
+        for combo_idx in range(min(5, n * (n-1) * (n-2) // 6)):  # Ограничиваем до 5 комбинаций
+            # Выбираем случайные 3 актива
+            selected = np.random.choice(n, size=3, replace=False)
+            # Различные распределения весов между тремя
+            weights_3 = np.random.dirichlet([1, 1, 1], size=1)[0]
+            three_asset_weights = {symbols[k]: 0.0 for k in range(n)}
+            for idx, asset_idx in enumerate(selected):
+                three_asset_weights[symbols[asset_idx]] = weights_3[idx]
+            alternative_weights_list.append(three_asset_weights)
+            alternative_labels.append(f'Три актива комбо #{combo_idx+1}')
+    
+    if debug:
+        print(f"Всего сгенерировано альтернативных стратегий: {len(alternative_weights_list)}")
+    
+    if debug:
+        print(f"Всего сгенерировано альтернативных стратегий: {len(alternative_weights_list)}")
+        print(f"Включая: {len([l for l in alternative_labels if 'Случайные' in l])} случайных стратегий")
+    
+    # Рассчитываем доходность для всех альтернативных весов
+    alternative_train_returns_list = []
+    alternative_test_returns_list = []
+    
+    if debug:
+        print("Рассчитываем доходность для всех альтернативных стратегий...")
+    
+    for idx, alt_weights in enumerate(alternative_weights_list):
+        if debug and (idx + 1) % 200 == 0:
+            print(f"  Обработано {idx + 1}/{len(alternative_weights_list)} стратегий...")
+        
+        alt_train = calculate_portfolio_return_series(train_df, alt_weights, symbols)
+        alt_test = calculate_portfolio_return_series(test_df, alt_weights, symbols) if not test_df.empty else pd.DataFrame()
+        alternative_train_returns_list.append(alt_train)
+        alternative_test_returns_list.append(alt_test)
+    
+    if debug:
+        print(f"Завершено! Рассчитано доходности для {len(alternative_weights_list)} стратегий.")
+        print("")
+        print(f"Завершено! Рассчитано доходности для {len(alternative_weights_list)} стратегий.")
+    
+    # 1. Общий график (train + test вместе)
+    fig_all, ax_all = plt.subplots(figsize=(16, 8))
+    
+    # Оптимальные веса - жирная линия
+    if not optimal_train_returns.empty:
+        ax_all.plot(optimal_train_returns['Date'], optimal_train_returns['Portfolio_Value'], 
+                   'b-', linewidth=4, label='Оптимальные веса', alpha=1.0, zorder=10)
+    
+    if not optimal_test_returns.empty:
+        ax_all.plot(optimal_test_returns['Date'], optimal_test_returns['Portfolio_Value'], 
+                   'b-', linewidth=4, alpha=1.0, zorder=10)
+    
+    # Альтернативные веса - хорошо видимые линии
+    for alt_train, alt_test in zip(alternative_train_returns_list, alternative_test_returns_list):
+        if not alt_train.empty:
+            ax_all.plot(alt_train['Date'], alt_train['Portfolio_Value'], 
+                       'darkgray', linewidth=2.0, linestyle='-', alpha=0.6, zorder=1)
+        if not alt_test.empty:
+            ax_all.plot(alt_test['Date'], alt_test['Portfolio_Value'], 
+                       'darkgray', linewidth=2.0, linestyle='-', alpha=0.6, zorder=1)
+    
+    # Вертикальная линия между train и test
+    if test_start_date:
+        ax_all.axvline(x=train_end_date, color='red', linestyle='-', linewidth=2, alpha=0.7)
+    
+    # Подписи периодов
+    if not optimal_train_returns.empty:
+        train_mid_idx = len(optimal_train_returns) // 2
+        train_mid_date = optimal_train_returns.iloc[train_mid_idx]['Date']
+        ax_all.text(train_mid_date, ax_all.get_ylim()[1] * 0.97, 'TRAIN ПЕРИОД', 
+                   ha='center', fontsize=14, fontweight='bold', 
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+    
+    if not optimal_test_returns.empty and test_start_date:
+        test_mid_idx = len(optimal_test_returns) // 2
+        test_mid_date = optimal_test_returns.iloc[test_mid_idx]['Date']
+        ax_all.text(test_mid_date, ax_all.get_ylim()[1] * 0.97, 'TEST ПЕРИОД', 
+                   ha='center', fontsize=14, fontweight='bold',
+                   bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+    
+    ax_all.set_xlabel('Дата', fontsize=12)
+    ax_all.set_ylabel('Накопленная доходность портфеля (нормализованная)', fontsize=12)
+    ax_all.set_title('Сравнение доходности портфеля: оптимальные веса vs альтернативы (Train + Test)', 
+                    fontsize=15, fontweight='bold')
+    ax_all.legend(loc='best', fontsize=11)
+    ax_all.grid(True, alpha=0.3)
+    ax_all.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    plt.setp(ax_all.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    plt.tight_layout()
+    
+    # Сохраняем общий график
+    if output_path is None:
+        base_path = f"portfolio_returns_train_test_{train_start_date.date()}_{test_end_date.date() if test_end_date else train_end_date.date()}"
+    else:
+        base_path = output_path.replace('.png', '')
+    
+    output_path_all = f"{base_path}_all.png"
+    plt.savefig(output_path_all, dpi=150, bbox_inches='tight')
+    
+    if debug:
+        print(f"\nОбщий график сохранен в: {output_path_all}")
+    
+    if not show:
+        plt.close(fig_all)
+    
+    # 2. Отдельный график для TRAIN периода
+    fig_train, ax_train = plt.subplots(figsize=(14, 7))
+    
+    if not optimal_train_returns.empty:
+        ax_train.plot(optimal_train_returns['Date'], optimal_train_returns['Portfolio_Value'], 
+                     'b-', linewidth=4, label='Оптимальные веса', alpha=1.0, zorder=10)
+    
+    for alt_train in alternative_train_returns_list:
+        if not alt_train.empty:
+            ax_train.plot(alt_train['Date'], alt_train['Portfolio_Value'], 
+                         'darkgray', linewidth=2.0, linestyle='-', alpha=0.6, zorder=1)
+    
+    ax_train.set_xlabel('Дата', fontsize=12)
+    ax_train.set_ylabel('Накопленная доходность портфеля (нормализованная)', fontsize=12)
+    ax_train.set_title('TRAIN ПЕРИОД: Оптимальные веса vs альтернативы', fontsize=14, fontweight='bold')
+    ax_train.legend(loc='best', fontsize=10)
+    ax_train.grid(True, alpha=0.3)
+    ax_train.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    plt.setp(ax_train.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    plt.tight_layout()
+    
+    output_path_train = f"{base_path}_train.png"
+    plt.savefig(output_path_train, dpi=150, bbox_inches='tight')
+    
+    if debug:
+        print(f"График TRAIN периода сохранен в: {output_path_train}")
+    
+    if not show:
+        plt.close(fig_train)
+    
+    # 3. Отдельный график для TEST периода
+    if test_start_date and not test_df.empty:
+        fig_test, ax_test = plt.subplots(figsize=(14, 7))
+        
+        if not optimal_test_returns.empty:
+            ax_test.plot(optimal_test_returns['Date'], optimal_test_returns['Portfolio_Value'], 
+                        'b-', linewidth=4, label='Оптимальные веса', alpha=1.0, zorder=10)
+        
+        for alt_test in alternative_test_returns_list:
+            if not alt_test.empty:
+                ax_test.plot(alt_test['Date'], alt_test['Portfolio_Value'], 
+                           'darkgray', linewidth=2.0, linestyle='-', alpha=0.6, zorder=1)
+        
+        ax_test.set_xlabel('Дата', fontsize=12)
+        ax_test.set_ylabel('Накопленная доходность портфеля (нормализованная)', fontsize=12)
+        ax_test.set_title('TEST ПЕРИОД: Оптимальные веса vs альтернативы', fontsize=14, fontweight='bold')
+        ax_test.legend(loc='best', fontsize=10)
+        ax_test.grid(True, alpha=0.3)
+        ax_test.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        plt.setp(ax_test.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        plt.tight_layout()
+        
+        output_path_test = f"{base_path}_test.png"
+        plt.savefig(output_path_test, dpi=150, bbox_inches='tight')
+        
+        if debug:
+            print(f"График TEST периода сохранен в: {output_path_test}")
+        
+        if not show:
+            plt.close(fig_test)
+    
+    # Показываем графики в конце, если указан флаг --show
+    if show:
+        plt.show()
+    
+    return output_path_all
+
+
 def verify_optimal_weights(portfolio_df, symbols, optimal_weights, sigma, spread_array, 
                           debug=False, num_samples=100):
     """
@@ -992,6 +1361,17 @@ def main_cli():
                        dest='debug',
                        action='store_true',
                        help='Показать подробную информацию о реальных датах загрузки для каждой акции')
+    
+    parser.add_argument('--plot-returns',
+                       dest='plot_returns',
+                       action='store_true',
+                       help='Построить график доходности портфеля для train/test периодов (требует --weights)')
+    
+    parser.add_argument('--train-ratio',
+                       dest='train_ratio',
+                       type=float,
+                       default=0.7,
+                       help='Доля данных для train периода (по умолчанию 0.7)')
 
     if len(sys.argv) == 1:
             parser.print_help()
@@ -1131,6 +1511,26 @@ def main_cli():
                 for symbol in successful_symbols:
                     if symbol in weights_dict:
                         print(f"{symbol}: {weights_dict[symbol]:.4f} ({weights_dict[symbol]*100:.2f}%)")
+            
+            # Построение графика доходности для train/test периодов
+            if args.plot_returns:
+                if args.debug:
+                    print("\n" + "=" * 60)
+                    print("ПОСТРОЕНИЕ ГРАФИКА ДОХОДНОСТИ ПОРТФЕЛЯ")
+                    print("=" * 60)
+                
+                returns_plot_path = plot_portfolio_returns_train_test(
+                    portfolio_df=portfolio_df,
+                    optimal_weights=weights_dict,
+                    symbols=successful_symbols,
+                    train_ratio=args.train_ratio,
+                    output_path=None if not args.plot_output else args.plot_output.replace('.png', '_returns.png'),
+                    debug=args.debug,
+                    show=args.show
+                )
+                
+                if not args.debug and returns_plot_path:
+                    print(returns_plot_path)
         else:
             print("Не удалось рассчитать оптимальные веса")
     
