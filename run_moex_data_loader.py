@@ -50,23 +50,14 @@ def compute_corwin_schultz_spread(df):
     low_combined = pd.concat([df['Low'], df['Low'].shift(-1)], axis=1).min(axis=1)
     gamma = (np.log(high_combined / (low_combined + epsilon)) ** 2)
     
-    # Alpha calculation according to Corwin-Schultz formula
-    # Correct formula from research.ipynb (based on Corwin & Schultz 2011):
-    # denom = sqrt(3 - 2*sqrt(2))
-    # alpha = (sqrt(2*beta) - sqrt(gamma)) / denom
-    
     denom = np.sqrt(3 - 2 * np.sqrt(2))  # denominator
     
-    # Calculate alpha using the correct simplified formula
-    sqrt_2beta = np.sqrt(2 * beta)
-    sqrt_gamma = np.sqrt(gamma)
+    beta_component = np.sqrt(2 * beta) - np.sqrt(beta) / (denom**2)
+
+    beta_component = np.maximum(beta_component, epsilon)
+    gamma_component = np.maximum(np.sqrt(gamma) / denom, epsilon)
     
-    # Ensure non-negative for square roots
-    sqrt_2beta = np.maximum(sqrt_2beta, epsilon)
-    sqrt_gamma = np.maximum(sqrt_gamma, epsilon)
-    
-    # Alpha = (sqrt(2*beta) - sqrt(gamma)) / denom
-    alpha = (sqrt_2beta - sqrt_gamma) / denom
+    alpha = (beta_component - gamma_component)
     
     # Spread calculation: S = 2*(exp(alpha) - 1)/(1 + exp(alpha))
     # This formula gives values in range [-2, 2] theoretically, but typically [0, 2]
