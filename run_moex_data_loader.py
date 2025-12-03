@@ -14,54 +14,27 @@ from scipy.optimize import minimize
 
 def compute_corwin_schultz_spread(df):
     """
-    Вычисляет спред по методу Корвина-Шульца (Corwin-Schultz)
-    Code written based on Corwin & Schultz (2011)
-    
-    Parameters:
-        df (pd.DataFrame): DataFrame с колонками High, Low, Close
-        
-    Returns:
-        pd.Series: Массив значений спреда для каждого дня
+    Вычисляет эффективный спред по методу Корвина–Шульца (Corwin-Schultz, 2012).
+    Требует колонки 'High' и 'Low'.
     """
-    # Check for null or infinite values
-    if df['High'].isnull().any() or df['Low'].isnull().any():
-        return pd.Series([0.0] * len(df), index=df.index)
-    
-    if np.isinf(df['High']).any() or np.isinf(df['Low']).any():
-        return pd.Series([0.0] * len(df), index=df.index)
-    
-    epsilon = 1e-10  # Small constant to prevent division by zero
-    
-    # Beta calculation
-    beta = (np.log(df['High'] / (df['Low'] + epsilon)) ** 2)
-    
-    # Apply minimum constraint
-    min_beta_sq = (np.sqrt(2) / (3 - 2 * np.sqrt(2))) ** 2
-    beta[beta < min_beta_sq] = min_beta_sq
-    
-    # Gamma calculation (using shifted values)
-    gamma = (np.log(df['High'].shift(-1) / (df['Low'].shift(-1) + epsilon)) ** 2)
-    
-    # Alpha calculation (точно по формуле из примера)
-    alpha_arg = 2 * beta - np.sqrt(beta) / (3 - 2 * np.sqrt(2))
-    
-    # Защита от отрицательных значений под корнем
-    alpha_arg[alpha_arg < 0] = 0
-    
-    # Вычисляем alpha, синхронизируя индексы
-    gamma_normalized = gamma / (3 - 2 * np.sqrt(2))
-    alpha = np.sqrt(alpha_arg) - np.sqrt(gamma_normalized)
-    
-    # Spread calculation
-    S = (2 * (np.exp(alpha) - 1) / (1 + np.exp(alpha)))
-    
-    # Если меньше 0, берем 0 (максимум из 0 и S)
-    S = np.maximum(0, S)
-    
-    # Удаляем NaN значения и возвращаем
-    S = S.dropna()
-    
-    return S
+    epsilon = 1e-10
+
+    high = df['High']
+    low = df['Low']
+
+    beta = (np.log(high / (low + epsilon)) ** 2 +
+            np.log(high.shift(-1) / (low.shift(-1) + epsilon)) ** 2)
+
+    H2 = pd.concat([high, high.shift(-1)], axis=1).max(axis=1)
+    L2 = pd.concat([low, low.shift(-1)], axis=1).min(axis=1)
+    gamma = (np.log(H2 / (L2 + epsilon))) ** 2
+
+    denominator = 3 - 2 * np.sqrt(2)
+    alpha = (np.sqrt(2 * beta) - np.sqrt(beta)) / denominator - np.sqrt(gamma / denominator)
+
+    alpha = alpha.clip(lower=0)
+    spread = (2 * (np.exp(alpha) - 1) / (1 + np.exp(alpha))).clip(lower=0)
+    return spread.dropna()
 
 
 def compute_spread(df, use_corwin_schultz=False):
